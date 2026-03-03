@@ -247,6 +247,34 @@ For production deployment, consider:
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
+## Local Verification with Docker Compose
+
+Before merging or touching any Azure secrets, you can verify that both containers build and start correctly on your machine using Docker Compose:
+
+```bash
+# Build both images and start the services in the foreground (Ctrl-C to stop)
+docker compose up --build
+```
+
+| Service | URL |
+|---|---|
+| Main backend | <http://localhost:8000/health> |
+| GAT service  | <http://localhost:8001/health> |
+
+Both endpoints should return a JSON health response, confirming the images build correctly and the apps listen on the expected ports.
+
+To run in the background:
+
+```bash
+docker compose up --build -d
+# check logs for a specific service
+docker compose logs -f gat-service
+# tear down
+docker compose down
+```
+
+Once both `/health` endpoints respond successfully you can be confident the Dockerfiles are correct, and you can proceed to merge and configure the Azure secrets to deploy.
+
 ## Deploying to Azure
 
 This repository includes a `Dockerfile` and a GitHub Actions workflow (`.github/workflows/azure-deploy.yml`) to deploy the backend to **Azure App Service for Containers**.
