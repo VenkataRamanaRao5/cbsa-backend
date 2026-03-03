@@ -170,35 +170,12 @@ class GATDataProcessor:
 
 
 class GATResultProcessor:
-    """Processes GAT results and makes authentication decisions"""
-    
-    def __init__(self):
-        self.decision_thresholds = {
-            "allow": 0.85,      # τ_high from your spec
-            "uncertain": 0.3,   # τ_low from your spec
-        }
+    """Processes GAT results — passes through raw similarity scores"""
     
     def process_gat_response(self, response: GATProcessingResponse) -> Dict[str, Any]:
-        """Process GAT response and return authentication decision"""
-        
-        # Authentication decision based on similarity score
-        if response.similarity_score is None:
-            auth_decision = "UNCERTAIN"
-            confidence = 0.0
-        elif response.similarity_score >= self.decision_thresholds["allow"]:
-            auth_decision = "ALLOW"
-            confidence = response.similarity_score
-        elif response.similarity_score <= self.decision_thresholds["uncertain"]:
-            auth_decision = "BLOCK"
-            confidence = 1.0 - response.similarity_score
-        else:
-            auth_decision = "UNCERTAIN"
-            confidence = 0.5
-        
+        """Return raw GAT scores without making auth decisions"""
         return {
-            "auth_decision": auth_decision,
             "similarity_score": response.similarity_score,
-            "confidence": confidence,
             "session_vector": response.session_vector,
             "processing_time_ms": response.processing_time_ms
         }

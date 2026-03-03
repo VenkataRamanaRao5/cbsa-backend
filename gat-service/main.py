@@ -65,7 +65,8 @@ async def load_gat_model():
         logger.info("Initializing GAT service components...")
         
         # Initialize data processor
-        data_processor = BehavioralDataProcessor(config.dict())
+        config_dict = config.dict() if hasattr(config, 'dict') else vars(config)
+        data_processor = BehavioralDataProcessor(config_dict)
         pytorch_converter = PyTorchDataConverter()
         
         # Try to load PyTorch model
@@ -170,7 +171,8 @@ def simulate_gat_processing(
     user_profile: Optional[list] = None
 ) -> Dict[str, Any]:
     """
-    Simulate GAT processing when PyTorch model not available
+    Simulate GAT processing when PyTorch model not available.
+    Returns raw similarity score — no auth decisions.
     """
     import random
     import time
@@ -185,30 +187,15 @@ def simulate_gat_processing(
     
     # Simulate similarity calculation
     if user_profile:
-        # Simple similarity calculation
         similarity = random.uniform(0.7, 0.95)
     else:
         similarity = random.uniform(0.5, 0.8)
-    
-    # Authentication decision
-    threshold = config.similarity_threshold
-    if similarity >= threshold:
-        decision = "ALLOW"
-        confidence = similarity
-    elif similarity < threshold * 0.7:
-        decision = "BLOCK"
-        confidence = 1.0 - similarity
-    else:
-        decision = "UNCERTAIN"
-        confidence = abs(similarity - threshold) / threshold
     
     processing_time = (time.time() - start_time) * 1000
     
     return {
         "session_vector": session_vector,
         "similarity_score": similarity,
-        "auth_decision": decision,
-        "confidence": min(confidence, 1.0),
         "processing_time_ms": processing_time,
         "attention_weights": None,
         "node_embeddings": None,
@@ -314,7 +301,7 @@ async def enroll_user_profile(request: GATProcessingRequest):
         return {
             "user_id": request.graph.user_id,
             "profile_vector": response.session_vector,
-            "enrollment_confidence": response.confidence,
+            "similarity_score": response.similarity_score,
             "num_events": len(request.graph.nodes),
             "session_duration": request.graph.session_duration,
             "timestamp": datetime.now().isoformat()
@@ -342,7 +329,7 @@ async def train_model(request: TrainingRequest, background_tasks: BackgroundTask
         # Add training task to background
         background_tasks.add_task(
             train_model_background,
-            request.dict()
+            request.model_dump()
         )
         
         return TrainingResponse(
@@ -438,7 +425,7 @@ async def convert_behavioral_data(
         )
         
         return {
-            "temporal_graph": temporal_graph.dict(),
+            "temporal_graph": temporal_graph.model_dump(),
             "summary": {
                 "num_nodes": len(temporal_graph.nodes),
                 "num_edges": len(temporal_graph.edges),

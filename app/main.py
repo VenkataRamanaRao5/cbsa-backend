@@ -221,6 +221,12 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
         while True:
             try:
                 data = await websocket.receive_json()
+
+                # ---------- Engine processing (v1 layers) ----------
+                event = None
+                preprocessed = None
+                warmup_state = None
+
                 try:
                     event = validate_and_extract(data)
                     preprocessed = process_event(event)
@@ -246,7 +252,6 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                         preprocessed.window_vector,
                     )
 
-
                     logger.info(
                         "Processed event username=%s session=%s type=%s short_drift=%.4f long_drift=%.4f warmup=%s",
                         event.username,
@@ -260,6 +265,7 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                 except Exception as engine_error:
                     logger.warning("Engine processing error for client %s: %s", client_id, engine_error)
 
+                # ---------- Behavioral logging / enrollment / GAT ----------
                 try:
                     behaviour_msg = BehaviourMessage(**data)
 
@@ -299,28 +305,24 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                             )
                             logger.info(f"Enrollment complete notification sent to user {ws_user_id}")
 
-                    # Add event to GAT manager for potential Layer 3 processing
+                    # ---- GAT Layer 3 processing ----
                     gat_manager.add_event_to_session(session_id, behaviour_msg)
-                    
-                    # Simulate Layer 2 escalation (in real implementation, this would be Layer 2's decision)
-                    should_escalate = await simulate_layer2_decision(session_id, behaviour_msg)
-                    
-                    auth_decision = None
-                    if should_escalate:
-                        # Escalate to Layer 3 GAT processing
-                        session_window = gat_manager.get_session_window(session_id)
-                        if len(session_window) >= 5:  # Minimum events for GAT processing
-                            logger.info(f"Escalating session {session_id} to Layer 3 GAT processing")
-                            auth_result = await gat_manager.process_escalated_session(session_id, session_window)
-                            auth_decision = auth_result.get("auth_decision")
-                            
-                            # Clear window after processing
-                            if auth_decision in ["ALLOW", "BLOCK"]:
-                                gat_manager.clear_session_window(session_id)
 
+                    should_escalate = await simulate_layer2_decision(session_id, behaviour_msg)
+
+                    gat_similarity = None
+                    if should_escalate:
+                        session_window = gat_manager.get_session_window(session_id)
+                        if len(session_window) >= 5:
+                            logger.info(f"Escalating session {session_id} to Layer 3 GAT processing")
+                            gat_result = await gat_manager.process_escalated_session(session_id, session_window)
+                            gat_similarity = gat_result.get("similarity_score")
+
+                    # ---- Monitor broadcast ----
+                    event_type_str = event.event_type if event else (data.get("event_type") if isinstance(data, dict) else "unknown")
                     monitor_message = {
                         "receivedAt": time.time(),
-                        "eventType": event.event_type,
+                        "eventType": event_type_str,
                         "payload": data.get("event_data") if isinstance(data, dict) else None,
                         "deviceInfo": (
                             data.get("event_data", {}).get("deviceInfo")
@@ -329,8 +331,8 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                         ),
                         "signature": data.get("signature") if isinstance(data, dict) else None,
                         "raw": data,
-                        "authDecision": auth_decision,
-                        "layer3Processed": auth_decision is not None
+                        "gatSimilarity": gat_similarity,
+                        "layer3Processed": gat_similarity is not None,
                     }
 
                     try:
@@ -338,12 +340,13 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                     except Exception as e:
                         logger.error("Failed to broadcast to monitor clients: %s", e, exc_info=True)
 
-                    if bool(warmup_state.get("warmup", False)):
+                    # ---- Send response to client ----
+                    if warmup_state is not None and bool(warmup_state.get("warmup", False)):
                         response = {
                             "status": "WARMUP",
                             "collected_windows": int(warmup_state.get("collected_windows", 0)),
                         }
-                    else:
+                    elif preprocessed is not None and event is not None:
                         metrics = await asyncio.to_thread(
                             compute_prototype_metrics,
                             app.state.sqlite_store,
@@ -357,6 +360,9 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                             "stability_score": metrics.stability_score,
                             "matched_prototype_id": metrics.matched_prototype_id,
                         }
+                    else:
+                        # Engine failed — acknowledge receipt without metrics
+                        response = {"status": "received"}
 
                     await behaviour_manager.send_personal_message(response, websocket)
                 except ValueError as e:
@@ -533,7 +539,7 @@ async def get_gat_stats():
     return {
         "active_sessions": active_sessions,
         "total_events_buffered": total_events,
-    "window_seconds": settings.GAT_WINDOW_SECONDS,
+        "window_seconds": settings.GAT_WINDOW_SECONDS,
         "debug_mode": settings.DEBUG_MODE,
-        "cloud_endpoint": settings.GAT_CLOUD_ENDPOINT
+        "cloud_endpoint": settings.GAT_CLOUD_ENDPOINT,
     }

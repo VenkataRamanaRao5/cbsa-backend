@@ -51,11 +51,9 @@ class GATProcessingRequest(BaseModel):
 
 
 class GATProcessingResponse(BaseModel):
-    """Response from GAT service"""
+    """Response from GAT service — raw scores only, no auth decisions"""
     session_vector: List[float] = Field(..., min_length=64, max_length=64)
     similarity_score: Optional[float] = Field(None, ge=0.0, le=1.0)
-    auth_decision: str = Field(..., pattern="^(ALLOW|BLOCK|UNCERTAIN)$")
-    confidence: float = Field(..., ge=0.0, le=1.0)
     processing_time_ms: float
     attention_weights: Optional[List[List[float]]] = None
     node_embeddings: Optional[List[List[float]]] = None

@@ -1,43 +1,47 @@
 """
 GAT Service Configuration
 """
-from typing import Literal
 
 
 class GATSettings:
     # Service settings
-    APP_NAME: str = "GAT Processing Service"
-    VERSION: str = "1.0.0"
-    HOST: str = "0.0.0.0"
-    PORT: int = 8001
-    LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    app_name: str = "GAT Processing Service"
+    version: str = "1.0.0"
+    host: str = "0.0.0.0"
+    port: int = 8001
+    log_level: str = "INFO"
     
     # GAT Model settings
-    INPUT_DIM: int = 56  # Node feature dimension (48 behavioral + 8 event-type embedding; device info removed)
-    HIDDEN_DIM: int = 128  # Hidden layer size
-    OUTPUT_DIM: int = 64  # Final embedding dimension
-    NUM_HEADS: int = 8  # Multi-head attention
-    NUM_LAYERS: int = 3  # Number of GAT layers
-    DROPOUT: float = 0.1
+    input_dim: int = 56  # Node feature dimension (48 behavioral + 8 event-type embedding; device info removed)
+    hidden_dim: int = 128  # Hidden layer size
+    output_dim: int = 64  # Final embedding dimension
+    num_attention_heads: int = 8  # Multi-head attention
+    num_layers: int = 3  # Number of GAT layers
+    dropout_rate: float = 0.1
+    temporal_dim: int = 8  # Temporal encoding dimension
     
     # Training settings
-    LEARNING_RATE: float = 0.001
-    BATCH_SIZE: int = 32
-    TRIPLET_MARGIN: float = 0.5  # Margin for triplet loss
-    SIMILARITY_THRESHOLD: float = 0.85
+    learning_rate: float = 0.001
+    batch_size: int = 32
+    triplet_margin: float = 0.5  # Margin for triplet loss
+    similarity_threshold: float = 0.85
     
     # Processing settings
-    MAX_NODES: int = 64  # Maximum nodes per graph
-    EDGE_THRESHOLD: float = 3.0  # Max time delta for edges (seconds)
-    TIME_WINDOW_SECONDS: int = 20  # Sliding window size in seconds
-    MIN_EVENTS_PER_WINDOW: int = 5
-    MAX_EVENTS_PER_WINDOW: int = 100
-    DISTINCT_EVENT_CONNECTIONS: int = 4  # Connect across 4 distinct event types
-    DEVICE: str = "cpu"  # "cuda" if GPU available
+    max_nodes: int = 64  # Maximum nodes per graph
+    edge_threshold: float = 3.0  # Max time delta for edges (seconds)
+    time_window_seconds: int = 20  # Sliding window size in seconds
+    min_events_per_window: int = 5
+    max_events_per_window: int = 100
+    distinct_event_connections: int = 4  # Connect across 4 distinct event types
+    device: str = "cpu"  # "cuda" if GPU available
     
     # Model persistence
-    MODEL_SAVE_PATH: str = "./models/gat_model.pth"
-    CHECKPOINT_INTERVAL: int = 100  # Save every N processed graphs
+    model_save_path: str = "./models/gat_model.pth"
+    checkpoint_interval: int = 100  # Save every N processed graphs
 
 
 settings = GATSettings()
+
+
+def get_gat_settings() -> GATSettings:
+    return settings

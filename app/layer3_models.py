@@ -68,13 +68,9 @@ class GATProcessingRequest(BaseModel):
 
 
 class GATProcessingResponse(BaseModel):
-    """Response from cloud GAT service"""
+    """Response from GAT service — raw scores only, no auth decisions"""
     session_vector: List[float]  # 64-dimensional output embedding
     similarity_score: Optional[float] = None  # Cosine similarity to user profile
-    
-    # Authentication decision
-    auth_decision: str  # "ALLOW", "BLOCK", or "UNCERTAIN"
-    confidence: float
     
     # Debug information
     processing_time_ms: float

@@ -441,17 +441,17 @@ class GATInferenceEngine:
         return_attention: bool = False
     ) -> Dict:
         """
-        Perform authentication decision
+        Compute session embedding and similarity score against user profile.
+        Does NOT make auth decisions — returns raw scores only.
         
         Args:
             session_graph: Current session graph data
             user_profile_vector: User's enrolled profile
-            threshold: Authentication threshold
+            threshold: Unused (kept for API compat)
             return_attention: If True, include attention weights in response
             
         Returns:
-            Authentication result with decision and confidence
-            (Optional) attention_weights if return_attention=True
+            Dict with session_vector, similarity_score, processing_time_ms
         """
         start_time = datetime.now()
         
@@ -465,27 +465,17 @@ class GATInferenceEngine:
             attention_dict = None
         
         # Compute similarity with profile
-        similarity = float(np.dot(session_embedding, user_profile_vector) /   # type: ignore
-                          (np.linalg.norm(session_embedding) * np.linalg.norm(user_profile_vector)))
-        
-        # Authentication decision
-        if similarity >= threshold:
-            decision = "ALLOW"
-            confidence = similarity
-        elif similarity < threshold * 0.7:
-            decision = "BLOCK"
-            confidence = 1.0 - similarity
+        norm_product = np.linalg.norm(session_embedding) * np.linalg.norm(user_profile_vector)
+        if norm_product > 0:
+            similarity = float(np.dot(session_embedding, user_profile_vector) / norm_product)  # type: ignore
         else:
-            decision = "UNCERTAIN"
-            confidence = abs(similarity - threshold) / threshold
+            similarity = 0.0
         
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
         
         response = {
             "session_vector": session_embedding.tolist(),  # type: ignore
             "similarity_score": similarity,
-            "auth_decision": decision,
-            "confidence": confidence,
             "processing_time_ms": processing_time
         }
         

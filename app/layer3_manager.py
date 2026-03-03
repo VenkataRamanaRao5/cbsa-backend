@@ -53,9 +53,20 @@ class Layer3GATManager:
             user_profile = None
             user_profile_vector = None
             if temporal_graph.user_id:
+                # Check in-memory profile manager first
                 user_profile = await self.profile_manager.get_user_profile(temporal_graph.user_id)
                 if user_profile:
                     user_profile_vector = user_profile.profile_vector
+                else:
+                    # Fall back to triplet-trained profile persisted on disk
+                    from app.triplet_trainer import triplet_trainer
+                    disk_profile = triplet_trainer.load_profile(temporal_graph.user_id)
+                    if disk_profile is not None:
+                        user_profile_vector = disk_profile
+                        logger.info(
+                            f"Loaded triplet-trained profile for user {temporal_graph.user_id} "
+                            f"(dim={len(disk_profile)})"
+                        )
             
             # Step 3: Prepare GAT request
             gat_request = self.data_processor.prepare_gat_request(
@@ -67,33 +78,30 @@ class Layer3GATManager:
             # Step 4: Send to cloud GAT service
             gat_response = await self.cloud_interface.process_temporal_graph(gat_request)
             
-            # Step 5: Process results and make decision
-            auth_result = self.result_processor.process_gat_response(gat_response)
+            # Step 5: Process results
+            gat_result = self.result_processor.process_gat_response(gat_response)
             
             # Add metadata
-            auth_result.update({
+            gat_result.update({
                 "session_id": session_id,
                 "user_id": temporal_graph.user_id,
                 "layer": 3,
                 "graph_events": len(temporal_graph.nodes),
                 "graph_duration": temporal_graph.session_duration,
-                "has_user_profile": user_profile is not None
+                "has_user_profile": user_profile is not None or user_profile_vector is not None
             })
             
             logger.info(
-                f"Layer 3 decision for {session_id}: {auth_result['auth_decision']} "
-                f"(similarity: {auth_result.get('similarity_score', 'N/A'):.3f})"
+                f"Layer 3 result for {session_id}: similarity={gat_result.get('similarity_score', 'N/A')}"
             )
             
-            return auth_result
+            return gat_result
             
         except Exception as e:
             logger.error(f"Layer 3 processing failed for session {session_id}: {e}")
-            # Conservative fallback
             return {
                 "session_id": session_id,
-                "auth_decision": "BLOCK",
-                "confidence": 1.0,
+                "similarity_score": None,
                 "error": str(e),
                 "layer": 3
             }
