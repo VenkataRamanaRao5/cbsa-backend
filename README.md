@@ -269,18 +269,39 @@ az acr create --resource-group cbsa-rg --name <YOUR_ACR_NAME> --sku Basic --admi
 # 3. Create an App Service plan (Linux)
 az appservice plan create --name cbsa-plan --resource-group cbsa-rg --is-linux --sku B1
 
-# 4. Create the Web App (Docker container)
+# 4a. Create the main backend Web App (port 8000)
 az webapp create \
   --resource-group cbsa-rg \
   --plan cbsa-plan \
   --name <YOUR_WEBAPP_NAME> \
   --deployment-container-image-name <YOUR_ACR_NAME>.azurecr.io/cbsa-backend:latest
 
-# 5. Configure the web app to pull from ACR
+# 4b. Create the GAT service Web App (port 8001)
+az webapp create \
+  --resource-group cbsa-rg \
+  --plan cbsa-plan \
+  --name <YOUR_GAT_WEBAPP_NAME> \
+  --deployment-container-image-name <YOUR_ACR_NAME>.azurecr.io/cbsa-gat-service:latest
+
+# Tell Azure which port the GAT service container listens on
+az webapp config appsettings set \
+  --resource-group cbsa-rg \
+  --name <YOUR_GAT_WEBAPP_NAME> \
+  --settings WEBSITES_PORT=8001
+
+# 5. Configure both web apps to pull from ACR
 az webapp config container set \
   --name <YOUR_WEBAPP_NAME> \
   --resource-group cbsa-rg \
   --docker-custom-image-name <YOUR_ACR_NAME>.azurecr.io/cbsa-backend:latest \
+  --docker-registry-server-url https://<YOUR_ACR_NAME>.azurecr.io \
+  --docker-registry-server-user $(az acr credential show --name <YOUR_ACR_NAME> --query username -o tsv) \
+  --docker-registry-server-password $(az acr credential show --name <YOUR_ACR_NAME> --query passwords[0].value -o tsv)
+
+az webapp config container set \
+  --name <YOUR_GAT_WEBAPP_NAME> \
+  --resource-group cbsa-rg \
+  --docker-custom-image-name <YOUR_ACR_NAME>.azurecr.io/cbsa-gat-service:latest \
   --docker-registry-server-url https://<YOUR_ACR_NAME>.azurecr.io \
   --docker-registry-server-user $(az acr credential show --name <YOUR_ACR_NAME> --query username -o tsv) \
   --docker-registry-server-password $(az acr credential show --name <YOUR_ACR_NAME> --query passwords[0].value -o tsv)
@@ -297,44 +318,49 @@ az ad sp create-for-rbac \
 
 Add the following secrets to your GitHub repository (**Settings → Secrets and variables → Actions**):
 
-| Secret | Value |
-|---|---|
-| `AZURE_CREDENTIALS` | Full JSON output from the `az ad sp create-for-rbac` command above |
-| `REGISTRY_LOGIN_SERVER` | `<YOUR_ACR_NAME>.azurecr.io` |
-| `REGISTRY_USERNAME` | ACR admin username (from `az acr credential show`) |
-| `REGISTRY_PASSWORD` | ACR admin password (from `az acr credential show`) |
-| `AZURE_WEBAPP_NAME` | The name you chose for the Web App |
+| Secret | Used by | Value |
+|---|---|---|
+| `AZURE_CREDENTIALS` | both services | Full JSON output from the `az ad sp create-for-rbac` command above |
+| `REGISTRY_LOGIN_SERVER` | both services | `<YOUR_ACR_NAME>.azurecr.io` |
+| `REGISTRY_USERNAME` | both services | ACR admin username (from `az acr credential show`) |
+| `REGISTRY_PASSWORD` | both services | ACR admin password (from `az acr credential show`) |
+| `AZURE_WEBAPP_NAME` | main backend | The name you chose for the main backend Web App |
+| `AZURE_GAT_WEBAPP_NAME` | GAT service | The name you chose for the GAT service Web App (port 8001) |
 
 ### CI/CD Pipeline
 
-Once the secrets are configured, every push to the `main` branch will automatically:
+Once the secrets are configured, every push to the `main` branch will automatically run two parallel jobs:
 
-1. Build a Docker image from the `Dockerfile`.
-2. Push the image to Azure Container Registry.
-3. Deploy the new image to Azure App Service.
+1. **`build-and-deploy`** — builds the main backend image → pushes to ACR → deploys to `AZURE_WEBAPP_NAME`.
+2. **`build-and-deploy-gat`** — builds the GAT service image from `gat-service/` → pushes to ACR → deploys to `AZURE_GAT_WEBAPP_NAME`.
 
 You can also trigger a deployment manually from **Actions → Build and Deploy to Azure App Service → Run workflow**.
 
 ### Manual Deployment (without CI/CD)
 
 ```bash
-# Build the image locally
-docker build -t <YOUR_ACR_NAME>.azurecr.io/cbsa-backend:latest .
-
 # Log in to ACR
 az acr login --name <YOUR_ACR_NAME>
 
-# Push the image
+# --- Main backend ---
+docker build -t <YOUR_ACR_NAME>.azurecr.io/cbsa-backend:latest .
 docker push <YOUR_ACR_NAME>.azurecr.io/cbsa-backend:latest
-
-# Restart the web app to pull the latest image
 az webapp restart --name <YOUR_WEBAPP_NAME> --resource-group cbsa-rg
+
+# --- GAT service ---
+docker build -t <YOUR_ACR_NAME>.azurecr.io/cbsa-gat-service:latest ./gat-service
+docker push <YOUR_ACR_NAME>.azurecr.io/cbsa-gat-service:latest
+az webapp restart --name <YOUR_GAT_WEBAPP_NAME> --resource-group cbsa-rg
 ```
 
 After deployment, the service is available at:
 
 ```
+# Main backend
 https://<YOUR_WEBAPP_NAME>.azurewebsites.net
+
+# GAT service
+https://<YOUR_GAT_WEBAPP_NAME>.azurewebsites.net
 ```
 
 WebSocket connections use `wss://` automatically via the Azure App Service TLS termination:
