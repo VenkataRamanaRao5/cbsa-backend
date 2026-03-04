@@ -69,6 +69,19 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
+      - name: Create Azure App Service for GAT (if not exists)
+        run: |
+          if az webapp show --name "${{ secrets.AZURE_GAT_WEBAPP_NAME }}" --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" > /dev/null 2>&1; then
+            echo "App Service ${{ secrets.AZURE_GAT_WEBAPP_NAME }} already exists, skipping creation."
+          else
+            echo "App Service ${{ secrets.AZURE_GAT_WEBAPP_NAME }} not found. Creating..."
+            az webapp create \
+              --name "${{ secrets.AZURE_GAT_WEBAPP_NAME }}" \
+              --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+              --plan "${{ secrets.AZURE_APP_SERVICE_PLAN }}" \
+              --deployment-container-image-name "${{ secrets.REGISTRY_LOGIN_SERVER }}/cbsa-gat-service:${{ github.sha }}"
+          fi
+
       - name: Deploy GAT service to Azure App Service
         uses: azure/webapps-deploy@v2
         with:
