@@ -12,7 +12,7 @@ class Settings:
     
     # Layer 3 GAT settings
     DEBUG_MODE: bool = True  # Set to False in production
-    GAT_CLOUD_ENDPOINT: str = "http://localhost:8001"
+    GAT_CLOUD_ENDPOINT: str = "https://behaviorbackend2.azurewebsites.net"
     GAT_WINDOW_SIZE: int = 32  # Deprecated: event count window (kept for compatibility)
     GAT_WINDOW_SECONDS: int = 20  # Temporal graph window in seconds
     GAT_NODE_FEATURE_DIM: int = 56  # 48 behavioral + 8 event-type embedding (device info removed)

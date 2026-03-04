@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class GATCloudInterface:
     """Interface to cloud GAT processing service"""
     
-    def __init__(self, cloud_endpoint: str = "http://localhost:8001"):  # Mock endpoint for now
+    def __init__(self, cloud_endpoint: str = "https://behaviorbackend2.azurewebsites.net"):
         self.cloud_endpoint = cloud_endpoint
         self.session_timeout = 30.0  # 30 second timeout
         self.retry_attempts = 3
@@ -23,7 +23,7 @@ class GATCloudInterface:
         """
         Send temporal graph to GAT service for processing.
 
-        The gat-service (localhost:8001 in dev, cloud URL in prod) exposes
+        The gat-service (behaviorbackend2.azurewebsites.net) exposes
         POST /process which runs the real SiameseGATNetwork / GATInferenceEngine.
         """
         try:
@@ -45,7 +45,7 @@ class GATCloudInterface:
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=self.session_timeout)
         ) as session:
-            payload = request.dict()
+            payload = request.model_dump()
 
             for attempt in range(self.retry_attempts):
                 try:
