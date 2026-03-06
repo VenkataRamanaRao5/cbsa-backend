@@ -235,7 +235,7 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                     try:
                         await asyncio.to_thread(
                             app.state.sqlite_store.insert_behaviour_log,
-                            event.username,
+                            event.user_id,
                             event.session_id,
                             event.timestamp,
                             event.event_type,
@@ -249,13 +249,13 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
 
                     warmup_state = await asyncio.to_thread(
                         app.state.sqlite_store.collect_warmup_window,
-                        event.username,
+                        event.user_id,
                         preprocessed.window_vector,
                     )
 
                     logger.info(
                         "Processed event username=%s session=%s type=%s short_drift=%.4f long_drift=%.4f warmup=%s",
-                        event.username,
+                        event.user_id,
                         event.session_id,
                         event.event_type,
                         preprocessed.short_drift,
@@ -353,7 +353,7 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                         metrics = await asyncio.to_thread(
                             compute_prototype_metrics,
                             app.state.sqlite_store,
-                            event.username,
+                            event.user_id,
                             preprocessed,
                         )
                         engine_metrics = {
