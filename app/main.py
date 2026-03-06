@@ -290,10 +290,10 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                     gat_result: Dict[str, Any] = {}
 
                     # Only run GAT inference for enrolled users (skip during enrollment).
-                    user_is_enrolled = False
-                    if user_id != "unknown":
-                        enroll_status = enrollment_store.get_enrollment_status(user_id)
-                        user_is_enrolled = enroll_status.get("status") == "enrolled"
+                    user_is_enrolled = (
+                        user_id != "unknown"
+                        and enrollment_store.get_enrollment_status(user_id).get("status") == "enrolled"
+                    )
 
                     if user_is_enrolled:
                         now = time.time()
