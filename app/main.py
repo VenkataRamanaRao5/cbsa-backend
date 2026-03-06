@@ -46,35 +46,9 @@ async def startup_event() -> None:
     app.state.sqlite_store = SQLiteStore(DB_PATH)
 
 
-async def simulate_layer2_decision(session_id: str, behaviour_msg: BehaviourMessage) -> bool:
-    """
-    Simulate Layer 2 consistency engine decision for escalation
-    In real implementation, this would be replaced by actual Layer 2 logic
-    """
-    import random
-    
-    # Simulate escalation based on various factors
-    event_type = getattr(behaviour_msg, 'event_type', 'unknown')
-    
-    # Higher escalation probability for certain event patterns
-    escalation_triggers = [
-        "TOUCH_BALANCE_TOGGLE",  # Financial operations
-        "TOUCH_TRANSACTION_HISTORY",  # Sensitive data access
-        "PAGE_ENTER_MORE"  # Navigation patterns
-    ]
-    
-    # Check session window size - escalate every ~10-15 events for demonstration
-    window_size = len(gat_manager.get_session_window(session_id))
-    
-    if event_type in escalation_triggers:
-        # 30% chance of escalation for sensitive events
-        return random.random() < 0.3
-    elif window_size > 0 and window_size % 12 == 0:
-        # Escalate every 12th event for demo purposes
-        return True
-    else:
-        # 5% baseline escalation rate
-        return random.random() < 0.05
+# Per-session tracking of the last GAT inference timestamp.
+# Used to enforce the configured interval between GAT calls.
+_last_gat_inference_time: Dict[str, float] = {}
 
 
 def load_event_flow_map() -> dict:
@@ -216,6 +190,7 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
 
     # Per-connection tracking for enrollment notifications
     ws_user_id: str | None = None
+    ws_session_id: str | None = None
     enrollment_notified = False
 
     try:
@@ -272,6 +247,7 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
 
                     user_id = behaviour_msg.user_id or "unknown"
                     session_id = behaviour_msg.session_id or "unknown"
+                    ws_session_id = session_id
 
                     logger.info(
                         "Received message from user %s (session: %s, client: %s)",
@@ -307,18 +283,33 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                             logger.info(f"Enrollment complete notification sent to user {ws_user_id}")
 
                     # ---- GAT Layer 3 processing ----
+                    # Always collect events for the session window.
                     gat_manager.add_event_to_session(session_id, behaviour_msg)
-
-                    should_escalate = await simulate_layer2_decision(session_id, behaviour_msg)
 
                     gat_similarity = None
                     gat_result: Dict[str, Any] = {}
-                    if should_escalate:
-                        session_window = gat_manager.get_session_window(session_id)
-                        if len(session_window) >= 5:
-                            logger.info(f"Escalating session {session_id} to Layer 3 GAT processing")
-                            gat_result = await gat_manager.process_escalated_session(session_id, session_window)
-                            gat_similarity = gat_result.get("similarity_score")
+
+                    # Only run GAT inference for enrolled users (skip during enrollment).
+                    user_is_enrolled = False
+                    if user_id != "unknown":
+                        enroll_status = enrollment_store.get_enrollment_status(user_id)
+                        user_is_enrolled = enroll_status.get("status") == "enrolled"
+
+                    if user_is_enrolled:
+                        now = time.time()
+                        last_inference = _last_gat_inference_time.get(session_id, 0.0)
+                        if now - last_inference >= settings.GAT_INFERENCE_INTERVAL_SECONDS:
+                            session_window = gat_manager.get_session_window(session_id)
+                            if len(session_window) >= 5:
+                                logger.info(
+                                    f"Running GAT inference for session {session_id} "
+                                    f"(interval={settings.GAT_INFERENCE_INTERVAL_SECONDS}s)"
+                                )
+                                gat_result = await gat_manager.process_escalated_session(
+                                    session_id, session_window
+                                )
+                                gat_similarity = gat_result.get("similarity_score")
+                            _last_gat_inference_time[session_id] = now
 
                     # ---- Monitor broadcast ----
                     event_type_str = event.event_type if event else (data.get("event_type") if isinstance(data, dict) else "unknown")
@@ -413,6 +404,8 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
         behaviour_manager.disconnect(websocket)
         if ws_user_id:
             enrollment_store.end_session(ws_user_id)
+        if ws_session_id:
+            _last_gat_inference_time.pop(ws_session_id, None)
         logger.info(f"Client {client_id} disconnected normally")
         
     except Exception as e:
@@ -420,6 +413,8 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
         behaviour_manager.disconnect(websocket)
         if ws_user_id:
             enrollment_store.end_session(ws_user_id)
+        if ws_session_id:
+            _last_gat_inference_time.pop(ws_session_id, None)
 
 
 @app.websocket("/ws/monitor")

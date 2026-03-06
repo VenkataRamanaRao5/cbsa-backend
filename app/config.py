@@ -19,6 +19,7 @@ class Settings:
     GAT_NODE_FEATURE_DIM: int = 56  # 48 behavioral + 8 event-type embedding (device info removed)
     GAT_EDGE_DISTINCT_TARGET: int = 4  # Distinct event types to reach per node
     GAT_ESCALATION_THRESHOLD: float = 0.5  # Assume Layer 2 escalates at this threshold
+    GAT_INFERENCE_INTERVAL_SECONDS: float = 5.0  # Interval between GAT inference calls
 
     # Azure Cosmos DB – computation logging
     # Values are read from environment variables at runtime so secrets are

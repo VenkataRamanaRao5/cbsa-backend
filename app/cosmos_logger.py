@@ -132,7 +132,8 @@ class CosmosComputationLogger:
             "sessionId": session_id,
             "eventType": event_type,
             "engineMetrics": engine_metrics or {},
-            "gatResult": gat_result or {},
+            "gatResult": gat_result if gat_result else {},
+            "hasGatData": bool(gat_result),
         }
 
         try:
