@@ -134,8 +134,9 @@ class EnrollmentStore:
 
     def has_profile(self, user_id: str) -> bool:
         """Returns True if a trained profile exists for this user."""
-        profile_file = DATA_DIR / "profiles" / f"{user_id}_profile.json"
-        return profile_file.exists()
+        from app.cosmos_profile_store import cosmos_profile_store
+
+        return cosmos_profile_store.has_profile(user_id)
 
     def get_enrollment_status(self, user_id: str) -> dict:
         """
