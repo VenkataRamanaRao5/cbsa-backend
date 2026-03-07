@@ -441,6 +441,9 @@ class TripletTrainer:
         """Mean-pool GAT session embeddings into a 64-D profile vector."""
         import torch
 
+        if not graphs:
+            return [0.0] * OUTPUT_DIM
+
         model.eval()
         embeddings = []
         with torch.no_grad():
