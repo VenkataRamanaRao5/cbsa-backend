@@ -28,6 +28,11 @@ class Settings:
     COSMOS_KEY: str = os.environ.get("COSMOS_KEY", "")
     COSMOS_DATABASE: str = os.environ.get("COSMOS_DATABASE", "cbsa-logs")
     COSMOS_CONTAINER: str = os.environ.get("COSMOS_CONTAINER", "computation-logs")
+    COSMOS_PROFILES_CONTAINER: str = os.environ.get("COSMOS_PROFILES_CONTAINER", "user-profiles")
+
+    # Azure Blob Storage – model checkpoint files (.pth)
+    AZURE_STORAGE_CONNECTION_STRING: str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+    AZURE_STORAGE_CONTAINER: str = os.environ.get("AZURE_STORAGE_CONTAINER", "cbsa-models")
 
 
 settings = Settings()

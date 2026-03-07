@@ -29,6 +29,9 @@ LEARNING_RATE = 0.001
 MIN_EVENTS_FOR_SESSION = 5    # minimum events to form a session graph
 WINDOW_SECONDS = 30           # seconds per session window
 
+# Blob name for the shared GAT checkpoint
+_CHECKPOINT_BLOB_NAME = "gat_checkpoint.pt"
+
 
 def _event_type_embedding(event_type: str) -> List[float]:
     digest = hashlib.sha256(str(event_type).encode("utf-8")).digest()
@@ -289,32 +292,21 @@ class TripletTrainer:
         sessions: int = 0,
         training_time: float = 0.0,
     ):
-        PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-        profile = {
-            "user_id": user_id,
-            "profile_vector": vector,
-            "vector_dim": len(vector),
-            "method": method,
-            "sessions_used": sessions,
-            "training_time_seconds": training_time,
-            "created_at": time.time(),
-        }
-        path = PROFILES_DIR / f"{user_id}_profile.json"
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(profile, f, indent=2)
-        logger.info(f"Profile saved for {user_id} → {path}")
+        from app.cosmos_profile_store import cosmos_profile_store
+
+        cosmos_profile_store.save_profile(
+            user_id=user_id,
+            vector=vector,
+            method=method,
+            sessions=sessions,
+            training_time=training_time,
+        )
+        logger.info(f"Profile saved for {user_id}")
 
     def load_profile(self, user_id: str) -> Optional[List[float]]:
-        path = PROFILES_DIR / f"{user_id}_profile.json"
-        if not path.exists():
-            return None
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
-            return data.get("profile_vector")
-        except Exception as e:
-            logger.error(f"Failed to load profile for {user_id}: {e}")
-            return None
+        from app.cosmos_profile_store import cosmos_profile_store
+
+        return cosmos_profile_store.load_profile(user_id)
 
 
 # Singleton

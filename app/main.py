@@ -21,6 +21,8 @@ from app.enrollment_store import enrollment_store, ENROLLMENT_DURATION_SECONDS
 from app.behavioral_logger import behavioral_logger
 from app.triplet_trainer import triplet_trainer
 from app.cosmos_logger import cosmos_logger
+from app.cosmos_profile_store import cosmos_profile_store
+from app.blob_model_store import blob_model_store
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -570,3 +572,228 @@ async def get_gat_stats():
         "debug_mode": settings.DEBUG_MODE,
         "cloud_endpoint": settings.GAT_CLOUD_ENDPOINT,
     }
+
+
+# ================== Admin Endpoints ==================
+
+@app.delete("/admin/user/{user_id}")
+async def delete_user_data(user_id: str):
+    """
+    Delete **all** data associated with a user:
+      - SQLite user row, prototypes, behaviour_logs
+      - Behavioral log file (JSONL)
+      - User profile (Cosmos DB + local disk)
+      - Enrollment state
+      - In-memory GAT session windows for the user
+      - Cosmos DB computation logs for the user
+    """
+    results: Dict[str, Any] = {"user_id": user_id}
+
+    # 1. SQLite: prototypes + behaviour_logs + user row
+    try:
+        store: SQLiteStore = app.state.sqlite_store
+        with store._connect() as conn:
+            conn.execute("DELETE FROM behaviour_logs WHERE username = ?", (user_id,))
+            conn.execute("DELETE FROM prototypes WHERE username = ?", (user_id,))
+            conn.execute("DELETE FROM users WHERE username = ?", (user_id,))
+            conn.commit()
+        results["sqlite"] = "cleared"
+    except Exception as e:
+        logger.error("Failed to clear SQLite data for %s: %s", user_id, e)
+        results["sqlite"] = f"error: {e}"
+
+    # 2. Behavioral log file
+    try:
+        log_path = Path(__file__).resolve().parent.parent / "data" / "behavioral_logs" / f"{user_id}.jsonl"
+        if log_path.exists():
+            log_path.unlink()
+        results["behavioral_log"] = "cleared"
+    except Exception as e:
+        results["behavioral_log"] = f"error: {e}"
+
+    # 3. User profile (Cosmos + local disk)
+    try:
+        cosmos_profile_store.delete_profile(user_id)
+        results["profile"] = "cleared"
+    except Exception as e:
+        results["profile"] = f"error: {e}"
+
+    # 4. Enrollment state
+    try:
+        if user_id in enrollment_store._states:
+            del enrollment_store._states[user_id]
+            enrollment_store._save()
+        results["enrollment"] = "cleared"
+    except Exception as e:
+        results["enrollment"] = f"error: {e}"
+
+    # 5. In-memory GAT sessions belonging to this user
+    try:
+        sessions_cleared = 0
+        for sid in list(gat_manager.session_windows.keys()):
+            window = gat_manager.session_windows[sid]
+            if window and getattr(window[0], "user_id", None) == user_id:
+                del gat_manager.session_windows[sid]
+                sessions_cleared += 1
+        results["gat_sessions_cleared"] = sessions_cleared
+    except Exception as e:
+        results["gat_sessions"] = f"error: {e}"
+
+    # 6. Cosmos DB computation logs for this user
+    try:
+        deleted_count = _delete_cosmos_logs_for_user(user_id)
+        results["cosmos_computation_logs"] = f"deleted {deleted_count}"
+    except Exception as e:
+        results["cosmos_computation_logs"] = f"error: {e}"
+
+    # 7. In-memory profile manager
+    try:
+        if user_id in gat_manager.profile_manager.profiles:
+            del gat_manager.profile_manager.profiles[user_id]
+        results["in_memory_profile"] = "cleared"
+    except Exception as e:
+        results["in_memory_profile"] = f"error: {e}"
+
+    return results
+
+
+@app.delete("/admin/truncate")
+async def truncate_all_data():
+    """
+    Delete **all** data for every user:
+      - SQLite tables (users, prototypes, behaviour_logs)
+      - All behavioral log files
+      - All user profiles (Cosmos DB + local disk)
+      - Enrollment store
+      - All in-memory GAT session windows
+      - All Cosmos DB computation logs
+      - All model checkpoints (Blob Storage + local disk)
+    """
+    results: Dict[str, Any] = {}
+
+    # 1. SQLite
+    try:
+        store: SQLiteStore = app.state.sqlite_store
+        with store._connect() as conn:
+            conn.execute("DELETE FROM behaviour_logs")
+            conn.execute("DELETE FROM prototypes")
+            conn.execute("DELETE FROM users")
+            conn.commit()
+        results["sqlite"] = "truncated"
+    except Exception as e:
+        results["sqlite"] = f"error: {e}"
+
+    # 2. Behavioral log files
+    try:
+        log_dir = Path(__file__).resolve().parent.parent / "data" / "behavioral_logs"
+        count = 0
+        if log_dir.exists():
+            for p in log_dir.glob("*.jsonl"):
+                p.unlink(missing_ok=True)
+                count += 1
+        results["behavioral_logs"] = f"deleted {count} files"
+    except Exception as e:
+        results["behavioral_logs"] = f"error: {e}"
+
+    # 3. Profiles (Cosmos + local)
+    try:
+        n = cosmos_profile_store.delete_all_profiles()
+        results["profiles"] = f"deleted {n}"
+    except Exception as e:
+        results["profiles"] = f"error: {e}"
+
+    # 4. Enrollment store
+    try:
+        enrollment_store._states.clear()
+        enrollment_store._save()
+        results["enrollment"] = "truncated"
+    except Exception as e:
+        results["enrollment"] = f"error: {e}"
+
+    # 5. GAT session windows
+    try:
+        gat_manager.session_windows.clear()
+        gat_manager.profile_manager.profiles.clear()
+        results["gat_sessions"] = "truncated"
+    except Exception as e:
+        results["gat_sessions"] = f"error: {e}"
+
+    # 6. Cosmos computation logs
+    try:
+        deleted_count = _delete_all_cosmos_logs()
+        results["cosmos_computation_logs"] = f"deleted {deleted_count}"
+    except Exception as e:
+        results["cosmos_computation_logs"] = f"error: {e}"
+
+    # 7. Model checkpoints (Blob + local)
+    try:
+        blob_count = blob_model_store.delete_all_models()
+        local_ckpt_dir = Path(__file__).resolve().parent.parent / "data" / "checkpoints"
+        local_count = 0
+        if local_ckpt_dir.exists():
+            for p in local_ckpt_dir.glob("*.pt"):
+                p.unlink(missing_ok=True)
+                local_count += 1
+            for p in local_ckpt_dir.glob("*.pth"):
+                p.unlink(missing_ok=True)
+                local_count += 1
+        results["model_checkpoints"] = f"deleted {blob_count} blobs + {local_count} local"
+    except Exception as e:
+        results["model_checkpoints"] = f"error: {e}"
+
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Helpers for Cosmos computation-log cleanup
+# ---------------------------------------------------------------------------
+
+def _delete_cosmos_logs_for_user(user_id: str) -> int:
+    """Delete all computation-log docs for a given userId."""
+    container = cosmos_logger._container
+    if container is None:
+        return 0
+    count = 0
+    try:
+        items = list(
+            container.query_items(
+                query="SELECT c.id FROM c WHERE c.userId = @uid",
+                parameters=[{"name": "@uid", "value": user_id}],
+                partition_key=user_id,
+            )
+        )
+        for item in items:
+            try:
+                container.delete_item(item=item["id"], partition_key=user_id)
+                count += 1
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.error("Failed to delete Cosmos logs for %s: %s", user_id, exc)
+    return count
+
+
+def _delete_all_cosmos_logs() -> int:
+    """Delete every document in the computation-log container."""
+    container = cosmos_logger._container
+    if container is None:
+        return 0
+    count = 0
+    try:
+        items = list(
+            container.query_items(
+                query="SELECT c.id, c.userId FROM c",
+                enable_cross_partition_query=True,
+            )
+        )
+        for item in items:
+            try:
+                container.delete_item(
+                    item=item["id"], partition_key=item["userId"]
+                )
+                count += 1
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.error("Failed to truncate Cosmos computation logs: %s", exc)
+    return count
