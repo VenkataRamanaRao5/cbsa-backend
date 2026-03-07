@@ -198,8 +198,8 @@ class CosmosProfileStore:
                     item=user_id, partition_key=user_id
                 )
                 deleted = True
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Cosmos profile delete for %s: %s", user_id, exc)
 
         if settings.DEBUG_MODE:
             local_path = PROFILES_DIR / f"{user_id}_profile.json"
@@ -227,8 +227,8 @@ class CosmosProfileStore:
                             partition_key=item["userId"],
                         )
                         count += 1
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Failed to delete profile %s: %s", item["id"], exc)
             except Exception as exc:
                 logger.error("Failed to truncate Cosmos profiles: %s", exc)
 

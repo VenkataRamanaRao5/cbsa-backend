@@ -173,8 +173,8 @@ class BlobModelStore:
                 try:
                     self._container_client.delete_blob(blob.name)
                     count += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Failed to delete blob %s: %s", blob.name, exc)
         except Exception as exc:
             logger.error("Failed to list blobs for deletion: %s", exc)
         return count

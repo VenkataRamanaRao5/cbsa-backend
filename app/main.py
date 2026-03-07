@@ -18,8 +18,8 @@ from app.models import BehaviourMessage, ServerResponse, LoginRequest, LoginResp
 from app.websocket_manager import ConnectionManager
 from app.layer3_manager import Layer3GATManager
 from app.enrollment_store import enrollment_store, ENROLLMENT_DURATION_SECONDS
-from app.behavioral_logger import behavioral_logger
-from app.triplet_trainer import triplet_trainer
+from app.behavioral_logger import behavioral_logger, BEHAVIORAL_LOG_DIR
+from app.triplet_trainer import triplet_trainer, CHECKPOINT_PATH
 from app.cosmos_logger import cosmos_logger
 from app.cosmos_profile_store import cosmos_profile_store
 from app.blob_model_store import blob_model_store
@@ -604,7 +604,7 @@ async def delete_user_data(user_id: str):
 
     # 2. Behavioral log file
     try:
-        log_path = Path(__file__).resolve().parent.parent / "data" / "behavioral_logs" / f"{user_id}.jsonl"
+        log_path = BEHAVIORAL_LOG_DIR / f"{user_id}.jsonl"
         if log_path.exists():
             log_path.unlink()
         results["behavioral_log"] = "cleared"
@@ -685,10 +685,9 @@ async def truncate_all_data():
 
     # 2. Behavioral log files
     try:
-        log_dir = Path(__file__).resolve().parent.parent / "data" / "behavioral_logs"
         count = 0
-        if log_dir.exists():
-            for p in log_dir.glob("*.jsonl"):
+        if BEHAVIORAL_LOG_DIR.exists():
+            for p in BEHAVIORAL_LOG_DIR.glob("*.jsonl"):
                 p.unlink(missing_ok=True)
                 count += 1
         results["behavioral_logs"] = f"deleted {count} files"
@@ -730,7 +729,7 @@ async def truncate_all_data():
         blob_count = blob_model_store.delete_all_models()
         local_count = 0
         if settings.DEBUG_MODE:
-            local_ckpt_dir = Path(__file__).resolve().parent.parent / "data" / "checkpoints"
+            local_ckpt_dir = CHECKPOINT_PATH.parent
             if local_ckpt_dir.exists():
                 for p in local_ckpt_dir.glob("*.pt"):
                     p.unlink(missing_ok=True)
@@ -767,8 +766,8 @@ def _delete_cosmos_logs_for_user(user_id: str) -> int:
             try:
                 container.delete_item(item=item["id"], partition_key=user_id)
                 count += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to delete computation log %s: %s", item["id"], exc)
     except Exception as exc:
         logger.error("Failed to delete Cosmos logs for %s: %s", user_id, exc)
     return count
@@ -793,8 +792,8 @@ def _delete_all_cosmos_logs() -> int:
                     item=item["id"], partition_key=item["userId"]
                 )
                 count += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Failed to delete computation log %s: %s", item["id"], exc)
     except Exception as exc:
         logger.error("Failed to truncate Cosmos computation logs: %s", exc)
     return count
