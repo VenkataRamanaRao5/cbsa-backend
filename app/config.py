@@ -12,7 +12,7 @@ class Settings:
     WEBSOCKET_ENDPOINT: str = "/ws/behaviour"
 
     # Layer 3 GAT settings (cloud endpoint no longer used; GAT is now in-process)
-    DEBUG_MODE: bool = True  # Set to False in production
+    DEBUG_MODE: bool = False  # Set to False in production
     GAT_CLOUD_ENDPOINT: str = ""  # Kept for backwards compatibility; unused
     GAT_WINDOW_SIZE: int = 32  # Deprecated: event count window (kept for compatibility)
     GAT_WINDOW_SECONDS: int = 20  # Temporal graph window in seconds
