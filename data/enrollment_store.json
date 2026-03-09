@@ -1,7 +1,7 @@
 {
-  "venky": {
-    "user_id": "venky",
-    "accumulated_seconds": 70.23250675201416,
+  "nonexistent_user_test": {
+    "user_id": "nonexistent_user_test",
+    "accumulated_seconds": 0.0,
     "enrolled": false
   }
 }

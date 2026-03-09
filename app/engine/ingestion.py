@@ -26,10 +26,10 @@ def validate_and_extract(raw_json: dict) -> BehaviourEvent:
     if not verify_signature(raw_json):
         raise ValueError("Invalid signature")
 
-    username = raw_json.get("username")
-    if not isinstance(username, str) or not username.strip():
-        raise ValueError("Invalid username")
-    username = username.strip()
+    user_id = raw_json.get("user_id")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise ValueError("Invalid user_id")
+    user_id = user_id.strip()
 
     session_id = raw_json.get("session_id")
     if not isinstance(session_id, str) or not session_id.strip():
@@ -88,7 +88,7 @@ def validate_and_extract(raw_json: dict) -> BehaviourEvent:
     session_state.last_timestamp = timestamp
 
     return BehaviourEvent(
-        username=username,
+        user_id=user_id,
         session_id=session_id,
         vector=vector_array,
         timestamp=timestamp,

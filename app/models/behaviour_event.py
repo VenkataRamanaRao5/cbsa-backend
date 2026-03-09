@@ -5,7 +5,7 @@ import numpy as np
 
 @dataclass(slots=True)
 class BehaviourEvent:
-    username: str
+    user_id: str
     session_id: str
     vector: np.ndarray
     timestamp: float
