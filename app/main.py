@@ -72,11 +72,49 @@ async def root():
 
 @app.get("/health")
 async def health():
+    """
+    Health check endpoint.
+    Verifies all Cosmos DB connections and fails if any are unavailable.
+    """
+    cosmos_checks = {
+        "cosmos_logger": {
+            "enabled": cosmos_logger._enabled,
+            "connected": cosmos_logger._container is not None,
+        },
+        "cosmos_profile_store": {
+            "enabled": cosmos_profile_store._enabled,
+            "connected": cosmos_profile_store._container is not None,
+        },
+        "enrollment_store": {
+            "enabled": enrollment_store._enabled,
+            "connected": enrollment_store._container is not None,
+        },
+    }
+    
+    # Check if Cosmos is expected to be configured
+    cosmos_expected = bool(settings.COSMOS_ENDPOINT and settings.COSMOS_KEY)
+    
+    # Determine overall health status
+    all_healthy = True
+    errors = []
+    
+    if cosmos_expected:
+        for service, check in cosmos_checks.items():
+            if not check["enabled"] or not check["connected"]:
+                all_healthy = False
+                errors.append(f"{service}: not connected")
+    
+    status_code = 200 if all_healthy else 503
+    
     return JSONResponse(
+        status_code=status_code,
         content={
-            "status": "healthy",
+            "status": "healthy" if all_healthy else "unhealthy",
             "active_connections": behaviour_manager.get_connection_count(),
             "monitor_connections": monitor_manager.get_connection_count(),
+            "cosmos_db": cosmos_checks,
+            "cosmos_expected": cosmos_expected,
+            "errors": errors if errors else None,
         }
     )
 

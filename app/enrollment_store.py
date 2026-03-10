@@ -2,13 +2,17 @@
 Enrollment Session Store
 Tracks enrollment state per user across sessions.
 Enrollment window = 5 minutes of total ACTIVE time (accumulated across sessions).
+
+Stores enrollment state in Cosmos DB with local file fallback in DEBUG_MODE.
 """
 
 import json
 import logging
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +20,20 @@ ENROLLMENT_DURATION_SECONDS = 5 * 60  # 5 minutes
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 ENROLLMENT_FILE = DATA_DIR / "enrollment_store.json"
+
+# ---------------------------------------------------------------------------
+# Lazy import of azure-cosmos
+# ---------------------------------------------------------------------------
+try:
+    from azure.cosmos import CosmosClient, PartitionKey  # type: ignore[import]
+    from azure.cosmos.exceptions import CosmosResourceNotFoundError  # type: ignore[import]
+
+    _COSMOS_SDK_AVAILABLE = True
+except ImportError:
+    _COSMOS_SDK_AVAILABLE = False
+    logger.warning(
+        "azure-cosmos package not installed – Cosmos DB enrollment store disabled"
+    )
 
 
 class UserEnrollmentState:
@@ -61,25 +79,111 @@ class UserEnrollmentState:
 
 
 class EnrollmentStore:
-    """Persistent store for enrollment state across users."""
+    """Persistent store for enrollment state across users.
+    
+    In production (DEBUG_MODE=False): Cloud only
+    In development (DEBUG_MODE=True): Read from cloud first, write to both
+    """
 
     def __init__(self):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self._states: Dict[str, UserEnrollmentState] = {}
+        self._container = None
+        self._enabled = False
+        self._try_connect()
         self._load()
 
+    def _try_connect(self) -> None:
+        """Connect to Cosmos DB enrollment container."""
+        if not _COSMOS_SDK_AVAILABLE:
+            return
+
+        endpoint = settings.COSMOS_ENDPOINT.strip()
+        key = settings.COSMOS_KEY.strip()
+        if not endpoint or not key:
+            logger.info(
+                "COSMOS_ENDPOINT / COSMOS_KEY not set – "
+                "Cosmos DB enrollment store disabled"
+            )
+            return
+
+        database_name = settings.COSMOS_DATABASE
+        container_name = settings.COSMOS_ENROLLMENT_CONTAINER
+
+        try:
+            client = CosmosClient(endpoint, credential=key)
+            database = client.create_database_if_not_exists(id=database_name)
+            self._container = database.create_container_if_not_exists(
+                id=container_name,
+                partition_key=PartitionKey(path="/userId"),
+                offer_throughput=400,
+            )
+            self._enabled = True
+            logger.info(
+                "Cosmos DB enrollment store connected: database=%s container=%s",
+                database_name,
+                container_name,
+            )
+        except Exception as exc:
+            logger.error("Failed to connect Cosmos enrollment store: %s", exc)
+
     def _load(self):
+        """Load enrollment state from Cosmos DB (cloud first) or local file."""
+        # Try Cosmos DB first
+        if self._enabled and self._container is not None:
+            try:
+                items = list(
+                    self._container.query_items(
+                        query="SELECT * FROM c",
+                        enable_cross_partition_query=True,
+                    )
+                )
+                for item in items:
+                    user_id = item.get("userId")
+                    if user_id:
+                        self._states[user_id] = UserEnrollmentState.from_dict(item)
+                logger.info(f"Loaded enrollment state for {len(self._states)} users from Cosmos DB")
+                return
+            except Exception as e:
+                logger.error(f"Failed to load enrollment store from Cosmos DB: {e}")
+
+        # Fallback to local file in dev mode or if Cosmos fails
+        if settings.DEBUG_MODE or not self._enabled:
+            self._load_local()
+
+    def _load_local(self):
+        """Load enrollment state from local JSON file."""
         if ENROLLMENT_FILE.exists():
             try:
                 with ENROLLMENT_FILE.open("r", encoding="utf-8") as f:
                     raw = json.load(f)
                 for user_id, d in raw.items():
                     self._states[user_id] = UserEnrollmentState.from_dict(d)
-                logger.info(f"Loaded enrollment state for {len(self._states)} users")
+                logger.info(f"Loaded enrollment state for {len(self._states)} users from local file")
             except Exception as e:
-                logger.error(f"Failed to load enrollment store: {e}")
+                logger.error(f"Failed to load local enrollment store: {e}")
 
     def _save(self):
+        """Save enrollment state to Cosmos DB and (in dev mode) local file."""
+        # Save to Cosmos DB
+        if self._enabled and self._container is not None:
+            try:
+                for user_id, state in self._states.items():
+                    document: Dict[str, Any] = {
+                        "id": user_id,
+                        "userId": user_id,
+                        **state.to_dict(),
+                    }
+                    self._container.upsert_item(document)
+            except Exception as e:
+                logger.error(f"Failed to save enrollment store to Cosmos DB: {e}")
+
+        # Save to local file in dev mode
+        if settings.DEBUG_MODE:
+            self._save_local()
+
+    def _save_local(self):
+        """Save enrollment state to local JSON file."""
         try:
             with ENROLLMENT_FILE.open("w", encoding="utf-8") as f:
                 json.dump(
@@ -88,7 +192,7 @@ class EnrollmentStore:
                     indent=2,
                 )
         except Exception as e:
-            logger.error(f"Failed to save enrollment store: {e}")
+            logger.error(f"Failed to save local enrollment store: {e}")
 
     def get_or_create(self, user_id: str) -> UserEnrollmentState:
         if user_id not in self._states:
