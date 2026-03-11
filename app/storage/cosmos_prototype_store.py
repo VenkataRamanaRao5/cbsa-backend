@@ -4,11 +4,11 @@ Cosmos DB Prototype Store
 Stores prototype vectors, behaviour logs, and user state in Azure Cosmos DB.
 Mirrors the SQLiteStore interface so it can be used as a drop-in replacement.
 
-Container: ``prototype-store``  (partition key: /username)
+Container: ``prototype-store``  (partition key: /userId)
   - User documents  id = "user:<username>"
   - Prototype docs  id = "proto:<username>:<seqId>"
 
-Container: ``behaviour-logs``  (partition key: /username)
+Container: ``behaviour-logs``  (partition key: /userId)
   - One document per logged behaviour event.
 
 Behaviour follows the pattern used by the rest of the codebase:
@@ -111,12 +111,12 @@ class CosmosPrototypeStore:
             database = client.create_database_if_not_exists(id=db_name)
             self._proto_container = database.create_container_if_not_exists(
                 id=settings.COSMOS_PROTOTYPE_CONTAINER,
-                partition_key=PartitionKey(path="/username"),
+                partition_key=PartitionKey(path="/userId"),
                 offer_throughput=400,
             )
             self._logs_container = database.create_container_if_not_exists(
                 id=settings.COSMOS_BEHAVIOUR_LOGS_CONTAINER,
-                partition_key=PartitionKey(path="/username"),
+                partition_key=PartitionKey(path="/userId"),
                 offer_throughput=400,
             )
             self._enabled = True
@@ -179,6 +179,7 @@ class CosmosPrototypeStore:
         if doc is None:
             doc = {
                 "id": self._user_doc_id(username),
+                "userId": username,
                 "username": username,
                 "type": "user",
                 "initialized": 0,
@@ -199,6 +200,7 @@ class CosmosPrototypeStore:
                 self._upsert_user_doc(
                     {
                         "id": self._user_doc_id(username),
+                        "userId": username,
                         "username": username,
                         "type": "user",
                         "initialized": 0,
@@ -226,6 +228,7 @@ class CosmosPrototypeStore:
             if doc is None:
                 doc = {
                     "id": self._user_doc_id(username),
+                    "userId": username,
                     "username": username,
                     "type": "user",
                     "initialized": 0,
@@ -253,6 +256,7 @@ class CosmosPrototypeStore:
                 self._logs_container.upsert_item(
                     {
                         "id": str(uuid.uuid4()),
+                        "userId": username,
                         "username": username,
                         "sessionId": session_id,
                         "eventTimestamp": float(event_timestamp),
@@ -336,6 +340,7 @@ class CosmosPrototypeStore:
                 self._proto_container.upsert_item(
                     {
                         "id": self._proto_doc_id(username, seq_id),
+                        "userId": username,
                         "username": username,
                         "type": "prototype",
                         "protoId": seq_id,
@@ -529,6 +534,7 @@ class CosmosPrototypeStore:
                 if doc is None:
                     doc = {
                         "id": self._user_doc_id(username),
+                        "userId": username,
                         "username": username,
                         "type": "user",
                         "initialized": incoming_initialized,
@@ -553,6 +559,7 @@ class CosmosPrototypeStore:
                     self._proto_container.upsert_item(
                         {
                             "id": self._proto_doc_id(username, seq_id),
+                            "userId": username,
                             "username": username,
                             "type": "prototype",
                             "protoId": seq_id,
@@ -572,6 +579,7 @@ class CosmosPrototypeStore:
                         self._logs_container.upsert_item(
                             {
                                 "id": str(uuid.uuid4()),
+                                "userId": username,
                                 "username": username,
                                 "sessionId": str(log_item.get("session_id", "")),
                                 "eventTimestamp": float(log_item.get("event_timestamp", 0.0)),
@@ -642,14 +650,14 @@ class CosmosPrototypeStore:
             try:
                 items = list(
                     self._proto_container.query_items(
-                        query="SELECT c.id, c.username FROM c",
+                        query="SELECT c.id, c.userId FROM c",
                         enable_cross_partition_query=True,
                     )
                 )
                 for item in items:
                     try:
                         self._proto_container.delete_item(
-                            item=item["id"], partition_key=item["username"]
+                            item=item["id"], partition_key=item["userId"]
                         )
                         proto_count += 1
                     except Exception:
@@ -661,14 +669,14 @@ class CosmosPrototypeStore:
             try:
                 items = list(
                     self._logs_container.query_items(
-                        query="SELECT c.id, c.username FROM c",
+                        query="SELECT c.id, c.userId FROM c",
                         enable_cross_partition_query=True,
                     )
                 )
                 for item in items:
                     try:
                         self._logs_container.delete_item(
-                            item=item["id"], partition_key=item["username"]
+                            item=item["id"], partition_key=item["userId"]
                         )
                         log_count += 1
                     except Exception:
