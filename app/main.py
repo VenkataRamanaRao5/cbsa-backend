@@ -974,7 +974,7 @@ async def upload_legacy_data(authorization: Optional[str] = Header(default=None)
                                 cosmos_prototype_store._logs_container.upsert_item(
                                     {
                                         "id": str(uuid.uuid4()),
-                                        "username": event_user_id,
+                                        "userId": event_user_id,
                                         "sessionId": str(event.get("session_id", "")),
                                         "eventTimestamp": float(event.get("logged_at") or event.get("timestamp", 0.0)),
                                         "eventType": str(event.get("event_type", "")),
