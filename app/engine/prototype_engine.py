@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Union
+
 import numpy as np
 
 from app.engine.similarity_engine import (
@@ -40,7 +42,7 @@ def _update_prototype(prototype: Prototype, current_vector: np.ndarray, current_
 
 
 def compute_prototype_metrics(
-    store: SQLiteStore,
+    store: Union["SQLiteStore", object],
     username: str,
     preprocessed: PreprocessedBehaviour,
 ) -> PrototypeMetrics:
