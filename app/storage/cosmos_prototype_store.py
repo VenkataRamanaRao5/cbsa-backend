@@ -5,8 +5,8 @@ Stores prototype vectors, behaviour logs, and user state in Azure Cosmos DB.
 Mirrors the SQLiteStore interface so it can be used as a drop-in replacement.
 
 Container: ``prototype-store``  (partition key: /userId)
-  - User documents  id = "user:<username>"
-  - Prototype docs  id = "proto:<username>:<seqId>"
+  - User documents  id = "user:<userId>"
+  - Prototype docs  id = "proto:<userId>:<seqId>"
 
 Container: ``behaviour-logs``  (partition key: /userId)
   - One document per logged behaviour event.
@@ -180,7 +180,6 @@ class CosmosPrototypeStore:
             doc = {
                 "id": self._user_doc_id(username),
                 "userId": username,
-                "username": username,
                 "type": "user",
                 "initialized": 0,
                 "createdAt": _utc_now_iso(),
@@ -201,7 +200,6 @@ class CosmosPrototypeStore:
                     {
                         "id": self._user_doc_id(username),
                         "userId": username,
-                        "username": username,
                         "type": "user",
                         "initialized": 0,
                         "createdAt": _utc_now_iso(),
@@ -229,7 +227,6 @@ class CosmosPrototypeStore:
                 doc = {
                     "id": self._user_doc_id(username),
                     "userId": username,
-                    "username": username,
                     "type": "user",
                     "initialized": 0,
                     "createdAt": _utc_now_iso(),
@@ -257,7 +254,6 @@ class CosmosPrototypeStore:
                     {
                         "id": str(uuid.uuid4()),
                         "userId": username,
-                        "username": username,
                         "sessionId": session_id,
                         "eventTimestamp": float(event_timestamp),
                         "eventType": event_type,
@@ -288,7 +284,7 @@ class CosmosPrototypeStore:
                 items = list(
                     self._proto_container.query_items(
                         query=(
-                            "SELECT * FROM c WHERE c.username = @u AND c.type = 'prototype' "
+                            "SELECT * FROM c WHERE c.userId = @u AND c.type = 'prototype' "
                             "ORDER BY c.protoId ASC"
                         ),
                         parameters=[{"name": "@u", "value": username}],
@@ -341,7 +337,6 @@ class CosmosPrototypeStore:
                     {
                         "id": self._proto_doc_id(username, seq_id),
                         "userId": username,
-                        "username": username,
                         "type": "prototype",
                         "protoId": seq_id,
                         "vectorJson": _to_json_array(vector),
@@ -394,13 +389,14 @@ class CosmosPrototypeStore:
                     self._proto_container.query_items(
                         query=(
                             "SELECT c.id, c.protoId, c.supportCount FROM c "
-                            "WHERE c.username = @u AND c.type = 'prototype' "
-                            "ORDER BY c.supportCount ASC, c.protoId ASC"
+                            "WHERE c.userId = @u AND c.type = 'prototype'"
                         ),
                         parameters=[{"name": "@u", "value": username}],
                         partition_key=username,
                     )
                 )
+                # Sort in Python to avoid requiring a Cosmos composite index
+                items.sort(key=lambda x: (x.get("supportCount", 0), x.get("protoId", 0)))
                 if len(items) <= limit:
                     return
                 delete_count = len(items) - limit
@@ -454,13 +450,13 @@ class CosmosPrototypeStore:
                 doc = self._get_user_doc(username)
                 if doc:
                     user_doc = {
-                        "username": username,
+                        "userId": username,
                         "initialized": doc.get("initialized", 0),
                         "created_at": doc.get("createdAt"),
                     }
                 items = list(
                     self._proto_container.query_items(
-                        query="SELECT * FROM c WHERE c.username = @u AND c.type = 'prototype' ORDER BY c.protoId ASC",
+                        query="SELECT * FROM c WHERE c.userId = @u AND c.type = 'prototype' ORDER BY c.protoId ASC",
                         parameters=[{"name": "@u", "value": username}],
                         partition_key=username,
                     )
@@ -469,7 +465,7 @@ class CosmosPrototypeStore:
                     prototypes.append(
                         {
                             "id": item["protoId"],
-                            "username": username,
+                            "userId": username,
                             "vector_json": item["vectorJson"],
                             "variance_json": item["varianceJson"],
                             "support_count": item.get("supportCount", 0),
@@ -484,7 +480,7 @@ class CosmosPrototypeStore:
             try:
                 items = list(
                     self._logs_container.query_items(
-                        query="SELECT * FROM c WHERE c.username = @u ORDER BY c.eventTimestamp ASC",
+                        query="SELECT * FROM c WHERE c.userId = @u ORDER BY c.eventTimestamp ASC",
                         parameters=[{"name": "@u", "value": username}],
                         partition_key=username,
                     )
@@ -493,7 +489,7 @@ class CosmosPrototypeStore:
                     behaviour_logs.append(
                         {
                             "id": item.get("id"),
-                            "username": username,
+                            "userId": username,
                             "session_id": item.get("sessionId"),
                             "event_timestamp": item.get("eventTimestamp"),
                             "event_type": item.get("eventType"),
@@ -511,17 +507,17 @@ class CosmosPrototypeStore:
             return self._sqlite.export_user(username)
 
         return {
-            "username": username,
-            "user": user_doc or {"username": username, "initialized": 0, "created_at": None},
+            "userId": username,
+            "user": user_doc or {"userId": username, "initialized": 0, "created_at": None},
             "prototypes": prototypes,
             "behaviour_logs": behaviour_logs,
         }
 
     def import_user(self, data: Dict[str, object]) -> None:
         """Import user data (used by the upload-legacy migration endpoint)."""
-        username = str(data.get("username", "")).strip()
+        username = str(data.get("userId") or data.get("username", "")).strip()
         if not username:
-            raise ValueError("Invalid import payload: username is required")
+            raise ValueError("Invalid import payload: userId (or username) is required")
 
         self.ensure_user(username)
 
@@ -535,7 +531,6 @@ class CosmosPrototypeStore:
                     doc = {
                         "id": self._user_doc_id(username),
                         "userId": username,
-                        "username": username,
                         "type": "user",
                         "initialized": incoming_initialized,
                         "createdAt": (
@@ -560,7 +555,6 @@ class CosmosPrototypeStore:
                         {
                             "id": self._proto_doc_id(username, seq_id),
                             "userId": username,
-                            "username": username,
                             "type": "prototype",
                             "protoId": seq_id,
                             "vectorJson": vector_json,
@@ -580,7 +574,6 @@ class CosmosPrototypeStore:
                             {
                                 "id": str(uuid.uuid4()),
                                 "userId": username,
-                                "username": username,
                                 "sessionId": str(log_item.get("session_id", "")),
                                 "eventTimestamp": float(log_item.get("event_timestamp", 0.0)),
                                 "eventType": str(log_item.get("event_type", "")),
@@ -607,7 +600,7 @@ class CosmosPrototypeStore:
             try:
                 items = list(
                     self._proto_container.query_items(
-                        query="SELECT c.id FROM c WHERE c.username = @u",
+                        query="SELECT c.id FROM c WHERE c.userId = @u",
                         parameters=[{"name": "@u", "value": username}],
                         partition_key=username,
                     )
@@ -626,7 +619,7 @@ class CosmosPrototypeStore:
             try:
                 items = list(
                     self._logs_container.query_items(
-                        query="SELECT c.id FROM c WHERE c.username = @u",
+                        query="SELECT c.id FROM c WHERE c.userId = @u",
                         parameters=[{"name": "@u", "value": username}],
                         partition_key=username,
                     )
