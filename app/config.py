@@ -13,7 +13,7 @@ class Settings:
     WEBSOCKET_ENDPOINT: str = "/ws/behaviour"
 
     # Layer 3 GAT settings (cloud endpoint no longer used; GAT is now in-process)
-    DEBUG_MODE: bool = True  # Set to False in production
+    DEBUG_MODE: bool = False  # Set to True for local development
     GAT_CLOUD_ENDPOINT: str = ""  # Kept for backwards compatibility; unused
     GAT_WINDOW_SIZE: int = 32  # Deprecated: event count window (kept for compatibility)
     GAT_WINDOW_SECONDS: int = 20  # Temporal graph window in seconds
@@ -33,6 +33,12 @@ class Settings:
     COSMOS_CONTAINER: str = os.environ.get("COSMOS_CONTAINER", "computation-logs")
     COSMOS_PROFILES_CONTAINER: str = os.environ.get("COSMOS_PROFILES_CONTAINER", "user-profiles")
     COSMOS_ENROLLMENT_CONTAINER: str = os.environ.get("COSMOS_ENROLLMENT_CONTAINER", "enrollment-state")
+    COSMOS_PROTOTYPE_CONTAINER: str = os.environ.get("COSMOS_PROTOTYPE_CONTAINER", "prototype-store")
+    COSMOS_BEHAVIOUR_LOGS_CONTAINER: str = os.environ.get("COSMOS_BEHAVIOUR_LOGS_CONTAINER", "behaviour-logs")
+
+    # Admin authorization token – required to call destructive or training endpoints.
+    # Set ADMIN_TOKEN in the environment; if empty, admin endpoints are disabled.
+    ADMIN_TOKEN: str = os.environ.get("ADMIN_TOKEN", "")
 
     # Azure Blob Storage – model checkpoint files (.pth).
     # Used by: blob_model_store, gat_engine (download on startup).
@@ -41,16 +47,6 @@ class Settings:
 
 
 settings = Settings()
-
-print(
-    f"settings.COSMOS_ENDPOINT: {settings.COSMOS_ENDPOINT}",
-    f"settings.COSMOS_KEY: {settings.COSMOS_KEY}",
-    f"settings.COSMOS_DATABASE: {settings.COSMOS_DATABASE}",
-    f"settings.COSMOS_CONTAINER: {settings.COSMOS_CONTAINER}",
-    f"settings.AZURE_STORAGE_CONNECTION_STRING: {settings.AZURE_STORAGE_CONNECTION_STRING}",
-    f"settings.AZURE_STORAGE_CONTAINER: {settings.AZURE_STORAGE_CONTAINER}",
-    sep='\n'
-)  # Debug: print all settings at startup
 
 
 def configure_logging():

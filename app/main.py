@@ -2,18 +2,20 @@ import json
 import logging
 import time
 import asyncio
+import uuid
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Header
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from app.config import settings, configure_logging
 from app.engine.ingestion import validate_and_extract
 from app.engine.preprocessing import process_event
 from app.engine.prototype_engine import compute_prototype_metrics
 from app.storage.sqlite_store import SQLiteStore, DB_PATH
+from app.storage.cosmos_prototype_store import cosmos_prototype_store
 from app.models import BehaviourMessage, ServerResponse, LoginRequest, LoginResponse, TrainRequest
 from app.websocket_manager import ConnectionManager
 from app.layer3_manager import Layer3GATManager
@@ -45,7 +47,33 @@ gat_manager = Layer3GATManager()  # Initialize GAT manager
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    # Always initialise the SQLite store (used as fallback in DEBUG_MODE).
     app.state.sqlite_store = SQLiteStore(DB_PATH)
+    # CosmosPrototypeStore is a module-level singleton; expose it on app.state too.
+    app.state.prototype_store = cosmos_prototype_store
+
+
+# ---------------------------------------------------------------------------
+# Authorization dependency
+# ---------------------------------------------------------------------------
+
+def _verify_admin_token(authorization: Optional[str] = Header(default=None)) -> None:
+    """
+    Require a valid Bearer token for destructive / training endpoints.
+    If ADMIN_TOKEN is not configured in the environment, all requests are rejected
+    to prevent accidental exposure of admin operations.
+    """
+    expected_token = settings.ADMIN_TOKEN.strip()
+    if not expected_token:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin endpoints are disabled: ADMIN_TOKEN is not configured",
+        )
+    if not authorization or authorization != f"Bearer {expected_token}":
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: valid Authorization: Bearer <token> header required",
+        )
 
 
 # Per-session tracking of the last GAT inference timestamp.
@@ -88,6 +116,14 @@ async def health():
         "enrollment_store": {
             "enabled": enrollment_store._enabled,
             "connected": enrollment_store._container is not None,
+        },
+        "cosmos_prototype_store": {
+            "enabled": cosmos_prototype_store._enabled,
+            "connected": cosmos_prototype_store._proto_container is not None,
+        },
+        "cosmos_behavioral_logger": {
+            "enabled": behavioral_logger._enabled,
+            "connected": behavioral_logger._container is not None,
         },
     }
     
@@ -185,12 +221,15 @@ async def logout(body: Dict[str, Any]):
 
 
 @app.post("/train")
-async def train_profile(request: TrainRequest):
+async def train_profile(request: TrainRequest, authorization: Optional[str] = Header(default=None)):
     """
     Trigger triplet training for a user (or all users).
     After training, a profile is stored in data/profiles/<user_id>_profile.json.
     Set force=True to retrain even if a profile already exists.
+
+    Requires ``Authorization: Bearer <ADMIN_TOKEN>`` header.
     """
+    _verify_admin_token(authorization)
     import asyncio
 
     loop = asyncio.get_event_loop()
@@ -249,7 +288,7 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
 
                     try:
                         await asyncio.to_thread(
-                            app.state.sqlite_store.insert_behaviour_log,
+                            cosmos_prototype_store.insert_behaviour_log,
                             event.user_id,
                             event.session_id,
                             event.timestamp,
@@ -263,7 +302,7 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                         logger.error("Failed to persist behaviour log: %s", log_error, exc_info=True)
 
                     warmup_state = await asyncio.to_thread(
-                        app.state.sqlite_store.collect_warmup_window,
+                        cosmos_prototype_store.collect_warmup_window,
                         event.user_id,
                         preprocessed.window_vector,
                     )
@@ -383,7 +422,7 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                     elif preprocessed is not None and event is not None:
                         metrics = await asyncio.to_thread(
                             compute_prototype_metrics,
-                            app.state.sqlite_store,
+                            cosmos_prototype_store,
                             event.user_id,
                             preprocessed,
                         )
@@ -615,19 +654,31 @@ async def get_gat_stats():
 # ================== Admin Endpoints ==================
 
 @app.delete("/admin/user/{user_id}")
-async def delete_user_data(user_id: str):
+async def delete_user_data(user_id: str, authorization: Optional[str] = Header(default=None)):
     """
     Delete **all** data associated with a user:
-      - SQLite user row, prototypes, behaviour_logs
+      - Cosmos DB prototype store (prototypes + behaviour logs for this user)
+      - SQLite user row, prototypes, behaviour_logs (debug mode)
       - Behavioral log file (JSONL)
       - User profile (Cosmos DB + local disk)
       - Enrollment state
       - In-memory GAT session windows for the user
       - Cosmos DB computation logs for the user
+
+    Requires ``Authorization: Bearer <ADMIN_TOKEN>`` header.
     """
+    _verify_admin_token(authorization)
     results: Dict[str, Any] = {"user_id": user_id}
 
-    # 1. SQLite: prototypes + behaviour_logs + user row
+    # 1. Cosmos prototype store (prototypes + behaviour logs)
+    try:
+        cosmos_prototype_store.delete_user(user_id)
+        results["cosmos_prototype_store"] = "cleared"
+    except Exception as e:
+        logger.error("Failed to clear Cosmos prototype data for %s: %s", user_id, e)
+        results["cosmos_prototype_store"] = f"error: {e}"
+
+    # 2. SQLite: prototypes + behaviour_logs + user row
     try:
         store: SQLiteStore = app.state.sqlite_store
         with store._connect() as conn:
@@ -640,23 +691,21 @@ async def delete_user_data(user_id: str):
         logger.error("Failed to clear SQLite data for %s: %s", user_id, e)
         results["sqlite"] = f"error: {e}"
 
-    # 2. Behavioral log file
+    # 3. Behavioral log file (Cosmos + local JSONL)
     try:
-        log_path = BEHAVIORAL_LOG_DIR / f"{user_id}.jsonl"
-        if log_path.exists():
-            log_path.unlink()
+        behavioral_logger.delete_user_log(user_id)
         results["behavioral_log"] = "cleared"
     except Exception as e:
         results["behavioral_log"] = f"error: {e}"
 
-    # 3. User profile (Cosmos + local disk)
+    # 4. User profile (Cosmos + local disk)
     try:
         cosmos_profile_store.delete_profile(user_id)
         results["profile"] = "cleared"
     except Exception as e:
         results["profile"] = f"error: {e}"
 
-    # 4. Enrollment state
+    # 5. Enrollment state
     try:
         if user_id in enrollment_store._states:
             del enrollment_store._states[user_id]
@@ -665,7 +714,7 @@ async def delete_user_data(user_id: str):
     except Exception as e:
         results["enrollment"] = f"error: {e}"
 
-    # 5. In-memory GAT sessions belonging to this user
+    # 6. In-memory GAT sessions belonging to this user
     try:
         sessions_cleared = 0
         for sid in list(gat_manager.session_windows.keys()):
@@ -677,14 +726,14 @@ async def delete_user_data(user_id: str):
     except Exception as e:
         results["gat_sessions"] = f"error: {e}"
 
-    # 6. Cosmos DB computation logs for this user
+    # 7. Cosmos DB computation logs for this user
     try:
         deleted_count = _delete_cosmos_logs_for_user(user_id)
         results["cosmos_computation_logs"] = f"deleted {deleted_count}"
     except Exception as e:
         results["cosmos_computation_logs"] = f"error: {e}"
 
-    # 7. In-memory profile manager
+    # 8. In-memory profile manager
     try:
         if user_id in gat_manager.profile_manager.profiles:
             del gat_manager.profile_manager.profiles[user_id]
@@ -696,20 +745,31 @@ async def delete_user_data(user_id: str):
 
 
 @app.delete("/admin/truncate")
-async def truncate_all_data():
+async def truncate_all_data(authorization: Optional[str] = Header(default=None)):
     """
     Delete **all** data for every user:
+      - Cosmos DB prototype store (prototypes + behaviour logs)
       - SQLite tables (users, prototypes, behaviour_logs)
-      - All behavioral log files
+      - All behavioral log files (Cosmos + local JSONL)
       - All user profiles (Cosmos DB + local disk)
       - Enrollment store
       - All in-memory GAT session windows
       - All Cosmos DB computation logs
       - All model checkpoints (Blob Storage + local disk)
+
+    Requires ``Authorization: Bearer <ADMIN_TOKEN>`` header.
     """
+    _verify_admin_token(authorization)
     results: Dict[str, Any] = {}
 
-    # 1. SQLite
+    # 1. Cosmos prototype store (prototypes + behaviour logs)
+    try:
+        counts = cosmos_prototype_store.delete_all()
+        results["cosmos_prototype_store"] = f"deleted {counts.get('prototypes_deleted', 0)} prototypes + {counts.get('logs_deleted', 0)} logs"
+    except Exception as e:
+        results["cosmos_prototype_store"] = f"error: {e}"
+
+    # 2. SQLite
     try:
         store: SQLiteStore = app.state.sqlite_store
         with store._connect() as conn:
@@ -721,25 +781,21 @@ async def truncate_all_data():
     except Exception as e:
         results["sqlite"] = f"error: {e}"
 
-    # 2. Behavioral log files
+    # 3. Behavioral logs (Cosmos + local JSONL files)
     try:
-        count = 0
-        if BEHAVIORAL_LOG_DIR.exists():
-            for p in BEHAVIORAL_LOG_DIR.glob("*.jsonl"):
-                p.unlink(missing_ok=True)
-                count += 1
-        results["behavioral_logs"] = f"deleted {count} files"
+        count = behavioral_logger.delete_all_logs()
+        results["behavioral_logs"] = f"deleted {count} Cosmos docs + local files"
     except Exception as e:
         results["behavioral_logs"] = f"error: {e}"
 
-    # 3. Profiles (Cosmos + local)
+    # 4. Profiles (Cosmos + local)
     try:
         n = cosmos_profile_store.delete_all_profiles()
         results["profiles"] = f"deleted {n}"
     except Exception as e:
         results["profiles"] = f"error: {e}"
 
-    # 4. Enrollment store
+    # 5. Enrollment store
     try:
         enrollment_store._states.clear()
         enrollment_store._save()
@@ -747,7 +803,7 @@ async def truncate_all_data():
     except Exception as e:
         results["enrollment"] = f"error: {e}"
 
-    # 5. GAT session windows
+    # 6. GAT session windows
     try:
         gat_manager.session_windows.clear()
         gat_manager.profile_manager.profiles.clear()
@@ -755,14 +811,14 @@ async def truncate_all_data():
     except Exception as e:
         results["gat_sessions"] = f"error: {e}"
 
-    # 6. Cosmos computation logs
+    # 7. Cosmos computation logs
     try:
         deleted_count = _delete_all_cosmos_logs()
         results["cosmos_computation_logs"] = f"deleted {deleted_count}"
     except Exception as e:
         results["cosmos_computation_logs"] = f"error: {e}"
 
-    # 7. Model checkpoints (Blob + local)
+    # 8. Model checkpoints (Blob + local)
     try:
         blob_count = blob_model_store.delete_all_models()
         local_count = 0
@@ -835,3 +891,115 @@ def _delete_all_cosmos_logs() -> int:
     except Exception as exc:
         logger.error("Failed to truncate Cosmos computation logs: %s", exc)
     return count
+
+
+# ---------------------------------------------------------------------------
+# Legacy data migration endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/admin/upload-legacy")
+async def upload_legacy_data(authorization: Optional[str] = Header(default=None)):
+    """
+    Migrate existing local data (cbsa.db SQLite file and per-user JSONL logs)
+    to Cosmos DB.
+
+    - Reads every user row + prototypes + behaviour_logs from cbsa.db
+    - Reads every *.jsonl file in data/behavioral_logs/
+    - Upserts everything into the Cosmos DB prototype-store and behaviour-logs containers.
+
+    This endpoint is idempotent: re-running it will upsert (not duplicate) data
+    that was already migrated.
+
+    Requires ``Authorization: Bearer <ADMIN_TOKEN>`` header.
+    """
+    _verify_admin_token(authorization)
+
+    if not cosmos_prototype_store._enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Cosmos DB prototype store is not configured – cannot migrate",
+        )
+
+    results: Dict[str, Any] = {}
+
+    # 1. Read SQLite and upload to Cosmos
+    sqlite_users_migrated = 0
+    sqlite_errors = 0
+    try:
+        sqlite_store: SQLiteStore = app.state.sqlite_store
+        # Get all usernames from SQLite
+        with sqlite_store._connect() as conn:
+            rows = conn.execute("SELECT username FROM users").fetchall()
+        usernames = [row["username"] for row in rows]
+
+        for username in usernames:
+            try:
+                user_data = sqlite_store.export_user(username)
+                cosmos_prototype_store.import_user(user_data)
+                sqlite_users_migrated += 1
+            except Exception as exc:
+                logger.error("Failed to migrate SQLite user %s: %s", username, exc)
+                sqlite_errors += 1
+
+        results["sqlite_migration"] = {
+            "users_migrated": sqlite_users_migrated,
+            "errors": sqlite_errors,
+        }
+    except Exception as exc:
+        results["sqlite_migration"] = {"error": str(exc)}
+
+    # 2. Read JSONL behavioral logs and upload to Cosmos
+    jsonl_users_migrated = 0
+    jsonl_events_migrated = 0
+    jsonl_errors = 0
+    try:
+        if BEHAVIORAL_LOG_DIR.exists():
+            for jsonl_path in BEHAVIORAL_LOG_DIR.glob("*.jsonl"):
+                user_id = jsonl_path.stem
+                try:
+                    events: list = []
+                    with jsonl_path.open("r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                try:
+                                    events.append(json.loads(line))
+                                except json.JSONDecodeError:
+                                    pass
+
+                    if cosmos_prototype_store._logs_container is not None:
+                        for event in events:
+                            event_user_id = event.get("user_id", user_id)
+                            try:
+                                cosmos_prototype_store._logs_container.upsert_item(
+                                    {
+                                        "id": str(uuid.uuid4()),
+                                        "username": event_user_id,
+                                        "sessionId": str(event.get("session_id", "")),
+                                        "eventTimestamp": float(event.get("logged_at") or event.get("timestamp", 0.0)),
+                                        "eventType": str(event.get("event_type", "")),
+                                        "vectorJson": "[]",
+                                        "shortDrift": 0.0,
+                                        "longDrift": 0.0,
+                                        "stabilityScore": 0.0,
+                                        "createdAt": str(event.get("logged_at", "")),
+                                        "rawEvent": event,
+                                    }
+                                )
+                                jsonl_events_migrated += 1
+                            except Exception:
+                                jsonl_errors += 1
+                    jsonl_users_migrated += 1
+                except Exception as exc:
+                    logger.error("Failed to migrate JSONL log for %s: %s", user_id, exc)
+                    jsonl_errors += 1
+
+        results["jsonl_migration"] = {
+            "users_migrated": jsonl_users_migrated,
+            "events_migrated": jsonl_events_migrated,
+            "errors": jsonl_errors,
+        }
+    except Exception as exc:
+        results["jsonl_migration"] = {"error": str(exc)}
+
+    return results

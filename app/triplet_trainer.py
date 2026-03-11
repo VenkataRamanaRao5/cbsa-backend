@@ -53,19 +53,27 @@ def _extract_vector(event: dict) -> List[float]:
 
 
 def _load_user_events(user_id: str) -> List[dict]:
+    """Load user events from Cosmos DB (via behavioral_logger) or local JSONL fallback."""
+    from app.behavioral_logger import behavioral_logger
+
+    events = behavioral_logger.load_user_events(user_id)
+    if events:
+        return sorted(events, key=lambda e: e.get("timestamp", 0))
+
+    # Legacy direct-file fallback (for backwards compatibility)
     path = BEHAVIORAL_LOG_DIR / f"{user_id}.jsonl"
     if not path.exists():
         return []
-    events = []
+    file_events = []
     with path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if line:
                 try:
-                    events.append(json.loads(line))
+                    file_events.append(json.loads(line))
                 except Exception:
                     pass
-    return sorted(events, key=lambda e: e.get("timestamp", 0))
+    return sorted(file_events, key=lambda e: e.get("timestamp", 0))
 
 
 def _split_into_windows(events: List[dict], window_sec: float = WINDOW_SECONDS) -> List[List[dict]]:
