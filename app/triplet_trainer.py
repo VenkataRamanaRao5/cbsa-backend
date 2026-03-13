@@ -53,8 +53,8 @@ def _extract_vector(event: dict) -> List[float]:
     return (base + embedding)[:56]
 
 
-def _normalise_event(raw: dict) -> dict:
-    """Normalise a raw Cosmos / local event into the format the trainer expects.
+def _normalize_event(raw: dict) -> dict:
+    """Normalize a raw Cosmos / local event into the format the trainer expects.
 
     The ``behaviour-logs`` Cosmos container may hold documents written by two
     different code-paths:
@@ -92,7 +92,7 @@ def _normalise_event(raw: dict) -> dict:
             try:
                 parsed = json.loads(vector_json) if isinstance(vector_json, str) else vector_json
                 vector = [float(v) for v in parsed]
-            except Exception:
+            except (json.JSONDecodeError, ValueError, TypeError):
                 pass
         ev["event_data"] = {"vector": vector}
 
@@ -107,8 +107,8 @@ def _load_user_events(user_id: str) -> List[dict]:
     events = behavioral_logger.load_user_events(user_id)
     if events:
         logger.info("[load] Fetched %d raw events for user '%s' from Cosmos DB", len(events), user_id)
-        normalised = [_normalise_event(e) for e in events]
-        sorted_events = sorted(normalised, key=lambda e: e.get("timestamp", 0))
+        normalized = [_normalize_event(e) for e in events]
+        sorted_events = sorted(normalized, key=lambda e: e.get("timestamp", 0))
         if sorted_events:
             ts_min = sorted_events[0].get("timestamp", 0)
             ts_max = sorted_events[-1].get("timestamp", 0)
@@ -135,8 +135,8 @@ def _load_user_events(user_id: str) -> List[dict]:
                 except Exception:
                     pass
     logger.info("[load] Loaded %d events from local file for user '%s'", len(file_events), user_id)
-    normalised = [_normalise_event(e) for e in file_events]
-    return sorted(normalised, key=lambda e: e.get("timestamp", 0))
+    normalized = [_normalize_event(e) for e in file_events]
+    return sorted(normalized, key=lambda e: e.get("timestamp", 0))
 
 
 def _split_into_windows(
