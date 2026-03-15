@@ -302,8 +302,8 @@ class TripletTrainer:
         try:
             import torch  # noqa: F401
         except ImportError:
-            logger.error("[train_all] PyTorch not available – cannot train without CUDA")
-            return [{"status": "error", "message": "Server error: PyTorch with CUDA support required for training"}]
+            logger.error("[train_all] PyTorch not available – cannot train")
+            return [{"status": "error", "message": "Server error: PyTorch is required for training"}]
 
         if not torch.cuda.is_available():
             logger.error("[train_all] CUDA is not available – cannot train")
