@@ -57,7 +57,7 @@ class InternalGATEngine:
         self._inference_engine = None
         self._pytorch_converter = None
         self._output_dim = 64
-        self._device = "cuda"
+        self._device = "cpu"
         self._initialized = False
 
     # ------------------------------------------------------------------
@@ -71,16 +71,6 @@ class InternalGATEngine:
 
         if not _GAT_AVAILABLE:
             logger.info("GAT engine running in simulation mode (PyTorch unavailable)")
-            return
-
-        try:
-            import torch
-        except ImportError:
-            logger.error("PyTorch not available – GAT engine cannot use CUDA")
-            return
-
-        if not torch.cuda.is_available():
-            logger.error("CUDA is not available – GAT engine cannot initialise")
             return
 
         try:

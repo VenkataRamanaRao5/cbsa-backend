@@ -250,22 +250,8 @@ class TripletTrainer:
         try:
             import torch  # noqa: F401
         except ImportError:
-            logger.error("PyTorch not available – cannot train without CUDA")
-            return {
-                "user_id": user_id,
-                "status": "error",
-                "message": "Server error: PyTorch with CUDA support required for training",
-                "profile_saved": False,
-            }
-
-        if not torch.cuda.is_available():
-            logger.error("CUDA is not available – cannot train")
-            return {
-                "user_id": user_id,
-                "status": "error",
-                "message": "Server error: CUDA is not available for training",
-                "profile_saved": False,
-            }
+            logger.warning("PyTorch not available, using numpy fallback for profile creation")
+            return self._train_numpy_fallback(user_id, windows)
 
         # Try to load an existing trained GAT model
         model = self._model or self._load_model()
@@ -547,11 +533,8 @@ class TripletTrainer:
             model_path = str(CHECKPOINT_PATH)
 
         if model_path is not None:
-            map_loc = "cuda" if torch.cuda.is_available() else "cpu"
-            state = torch.load(model_path, map_location=map_loc)
+            state = torch.load(model_path, map_location="cpu")
             model.load_state_dict(state)
-            if torch.cuda.is_available():
-                model.to("cuda")
             logger.info(f"Loaded GAT model from {model_path}")
             self._model = model
             return model
