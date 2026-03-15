@@ -254,7 +254,7 @@ class TripletTrainer:
             return {
                 "user_id": user_id,
                 "status": "error",
-                "message": "Server error: PyTorch is not available",
+                "message": "Server error: PyTorch with CUDA support required for training",
                 "profile_saved": False,
             }
 
@@ -317,7 +317,7 @@ class TripletTrainer:
             import torch  # noqa: F401
         except ImportError:
             logger.error("[train_all] PyTorch not available – cannot train without CUDA")
-            return [{"status": "error", "message": "Server error: PyTorch is not available"}]
+            return [{"status": "error", "message": "Server error: PyTorch with CUDA support required for training"}]
 
         if not torch.cuda.is_available():
             logger.error("[train_all] CUDA is not available – cannot train")
