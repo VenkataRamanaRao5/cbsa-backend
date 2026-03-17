@@ -223,6 +223,18 @@ class SQLiteStore:
             )
             connection.commit()
 
+    def delete_prototype(self, prototype_id: int) -> None:
+        """
+        Delete a single prototype by primary key.
+        Used by quality-based lifecycle management in prototype_engine.py.
+        """
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM prototypes WHERE id = ?",
+                (int(prototype_id),),
+            )
+            connection.commit()
+
     def enforce_prototype_limit(self, username: str, limit: int) -> None:
         with self._connect() as connection:
             rows = connection.execute(

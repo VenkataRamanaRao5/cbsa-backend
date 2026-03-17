@@ -16,8 +16,17 @@ from app.config import settings, configure_logging
 from app.engine.ingestion import validate_and_extract
 from app.engine.preprocessing import process_event
 from app.engine.prototype_engine import compute_prototype_metrics
+from app.engine.trust_engine import trust_engine
+from app.engine.invariants import (
+    check_preprocessed_behaviour,
+    check_prototype_metrics,
+    check_trust_result,
+    InvariantError,
+)
+from app.engine.structured_logger import structured_logger
 from app.storage.sqlite_store import SQLiteStore, DB_PATH
 from app.storage.cosmos_prototype_store import cosmos_prototype_store
+from app.storage.memory_store import memory_store
 from app.models import BehaviourMessage, ServerResponse, LoginRequest, LoginResponse, TrainRequest
 from app.websocket_manager import ConnectionManager
 from app.layer3_manager import Layer3GATManager
@@ -47,12 +56,31 @@ monitor_manager = ConnectionManager()
 gat_manager = Layer3GATManager()  # Initialize GAT manager
 
 
+async def _session_sweeper() -> None:
+    """
+    Background asyncio task that evicts inactive sessions every 60 seconds.
+    Sessions idle for > SESSION_TTL_SECONDS (600s) are removed from memory_store.
+    """
+    from app.storage.memory_store import SESSION_TTL_SECONDS
+    sweep_interval = min(60.0, SESSION_TTL_SECONDS / 5)
+    while True:
+        await asyncio.sleep(sweep_interval)
+        try:
+            evicted = memory_store.evict_expired_sessions()
+            if evicted:
+                logger.info("Session sweeper: evicted %d expired session(s)", evicted)
+        except Exception as exc:
+            logger.error("Session sweeper error: %s", exc)
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     # Always initialise the SQLite store (used as fallback in DEBUG_MODE).
     app.state.sqlite_store = SQLiteStore(DB_PATH)
     # CosmosPrototypeStore is a module-level singleton; expose it on app.state too.
     app.state.prototype_store = cosmos_prototype_store
+    # Start background session TTL sweeper
+    asyncio.create_task(_session_sweeper())
 
 
 # ---------------------------------------------------------------------------
@@ -285,23 +313,15 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                 warmup_state = None
 
                 try:
+                    # ── PIPELINE: validate → preprocess (snapshot → drift → buffer) ──
                     event = validate_and_extract(data)
                     preprocessed = process_event(event)
 
+                    # Runtime invariant guard — catch data quality issues early
                     try:
-                        await asyncio.to_thread(
-                            cosmos_prototype_store.insert_behaviour_log,
-                            event.user_id,
-                            event.session_id,
-                            event.timestamp,
-                            event.event_type,
-                            preprocessed.window_vector,
-                            preprocessed.short_drift,
-                            preprocessed.long_drift,
-                            preprocessed.stability_score,
-                        )
-                    except Exception as log_error:
-                        logger.error("Failed to persist behaviour log: %s", log_error, exc_info=True)
+                        check_preprocessed_behaviour(preprocessed)
+                    except InvariantError as inv_err:
+                        logger.error("Invariant violation in preprocessed output: %s", inv_err)
 
                     warmup_state = await asyncio.to_thread(
                         cosmos_prototype_store.collect_warmup_window,
@@ -376,21 +396,14 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                         and enrollment_store.get_enrollment_status(user_id).get("status") == "enrolled"
                     )
 
+                    # NOTE: Periodic GAT inference removed.
+                    # Layer-4 (TrustEngine) now drives GAT escalation via
+                    # event-driven uncertainty detection. See trust_engine.py
+                    # for full escalation logic documentation.
+                    # The _last_gat_inference_time dict is retained for
+                    # backward compatibility with disconnect cleanup only.
                     if user_is_enrolled:
-                        now = time.time()
-                        last_inference = _last_gat_inference_time.get(session_id, 0.0)
-                        if now - last_inference >= settings.GAT_INFERENCE_INTERVAL_SECONDS:
-                            session_window = gat_manager.get_session_window(session_id)
-                            if len(session_window) >= 5:
-                                logger.info(
-                                    f"Running GAT inference for session {session_id} "
-                                    f"(interval={settings.GAT_INFERENCE_INTERVAL_SECONDS}s)"
-                                )
-                                gat_result = await gat_manager.process_escalated_session(
-                                    session_id, session_window
-                                )
-                                gat_similarity = gat_result.get("similarity_score")
-                            _last_gat_inference_time[session_id] = now
+                        pass  # GAT escalation handled by Layer-4 below
 
                     # ---- Monitor broadcast ----
                     event_type_str = event.event_type if event else (data.get("event_type") if isinstance(data, dict) else "unknown")
@@ -422,25 +435,155 @@ async def websocket_behaviour_endpoint(websocket: WebSocket):
                             "collected_windows": int(warmup_state.get("collected_windows", 0)),
                         }
                     elif preprocessed is not None and event is not None:
+                        # ── PIPELINE: prototype matching ──────────────────────
                         metrics = await asyncio.to_thread(
                             compute_prototype_metrics,
                             cosmos_prototype_store,
                             event.user_id,
                             preprocessed,
+                            event.timestamp,
                         )
+
+                        # Runtime invariant guard on Layer-2 output
+                        try:
+                            check_prototype_metrics(metrics)
+                        except InvariantError as inv_err:
+                            logger.error("Invariant violation in prototype metrics: %s", inv_err)
+
+                        # ── PIPELINE: Layer-4 Trust Engine ────────────────────
+                        # Retrieve per-session TrustState from memory_store
+                        session_state = memory_store.get_or_create_session(
+                            event.session_id
+                        )
+                        _t_now = time.time()
+                        trust_result = trust_engine.update_trust(
+                            state=session_state.trust_state,
+                            similarity_score=metrics.similarity_score,
+                            stability_score=metrics.stability_score,
+                            short_drift=metrics.short_drift,
+                            long_drift=metrics.long_drift,
+                            anomaly_indicator=metrics.anomaly_indicator,
+                            gat_similarity=gat_similarity,
+                            current_time=_t_now,
+                        )
+
+                        # Runtime invariant guard on Layer-4 output
+                        try:
+                            check_trust_result(trust_result)
+                        except InvariantError as inv_err:
+                            logger.error("Invariant violation in trust result: %s", inv_err)
+
+                        # Task 8: Drift vs Trust validation debug log
+                        # Emit structured line so reviewers can verify drift↑ → trust↓
+                        logger.debug(
+                            "DRIFT_TRUST user=%s event=%d short_drift=%.4f trust=%.4f decision=%s",
+                            event.user_id,
+                            session_state.trust_state.event_count,
+                            metrics.short_drift,
+                            trust_result.trust_score,
+                            trust_result.decision,
+                        )
+
+                        # ── PIPELINE: GAT escalation (Layer-3) ───────────────
+                        # If Layer-4 says escalate and we haven't already run GAT,
+                        # trigger GAT processing now.
+                        if (
+                            trust_result.escalate_to_layer3
+                            and not gat_result
+                            and user_is_enrolled
+                        ):
+                            session_window = gat_manager.get_session_window(session_id)
+                            if len(session_window) >= 5:
+                                logger.info(
+                                    "Layer-4 escalation triggered for session %s "
+                                    "(decision=%s, anomaly=%.3f)",
+                                    session_id,
+                                    trust_result.decision,
+                                    trust_result.anomaly_indicator,
+                                )
+                                gat_result = await gat_manager.process_escalated_session(
+                                    session_id, session_window
+                                )
+                                _raw_gat = gat_result.get("similarity_score")
+                                # Task 7: validate GAT output before use — no fallback randoms
+                                if (
+                                    _raw_gat is not None
+                                    and isinstance(_raw_gat, (int, float))
+                                    and 0.0 <= float(_raw_gat) <= 1.0
+                                ):
+                                    gat_similarity = float(_raw_gat)
+                                    logger.info(
+                                        "GAT layer3 result: session=%s gat_score=%.4f",
+                                        session_id, gat_similarity,
+                                    )
+                                else:
+                                    gat_similarity = None
+                                    if _raw_gat is not None:
+                                        logger.warning(
+                                            "GAT returned invalid score %s for session %s — ignored",
+                                            _raw_gat, session_id,
+                                        )
+                                # Re-run trust update with GAT augmentation
+                                if gat_similarity is not None:
+                                    trust_result = trust_engine.update_trust(
+                                        state=session_state.trust_state,
+                                        similarity_score=metrics.similarity_score,
+                                        stability_score=metrics.stability_score,
+                                        short_drift=metrics.short_drift,
+                                        long_drift=metrics.long_drift,
+                                        anomaly_indicator=metrics.anomaly_indicator,
+                                        gat_similarity=gat_similarity,
+                                        current_time=time.time(),
+                                    )
+
+                        # ── PIPELINE: Structured event log (final step) ───────
+                        try:
+                            await asyncio.to_thread(
+                                structured_logger.log,
+                                event.user_id,
+                                event.session_id,
+                                event.timestamp,
+                                event.event_type,
+                                metrics,
+                                trust_result,
+                            )
+                        except Exception as log_err:
+                            logger.error("Structured logger error: %s", log_err)
+
                         engine_metrics = {
+                            # Layer-2 metrics
                             "similarityScore": metrics.similarity_score,
                             "shortDrift": metrics.short_drift,
                             "longDrift": metrics.long_drift,
                             "stabilityScore": metrics.stability_score,
+                            "prototypeConfidence": metrics.prototype_confidence,
+                            "behaviouralConsistency": metrics.behavioural_consistency,
+                            "prototypeSupportStrength": metrics.prototype_support_strength,
+                            "anomalyIndicator": metrics.anomaly_indicator,
                             "matchedPrototypeId": metrics.matched_prototype_id,
+                            # Layer-4 metrics
+                            "trustScore": trust_result.trust_score,
+                            "decision": trust_result.decision,
+                            "escalatedToLayer3": trust_result.escalate_to_layer3,
                         }
                         response = {
+                            # Layer-2 output (full rich vector)
                             "similarity_score": metrics.similarity_score,
                             "short_drift": metrics.short_drift,
                             "long_drift": metrics.long_drift,
                             "stability_score": metrics.stability_score,
+                            "prototype_confidence": metrics.prototype_confidence,
+                            "behavioural_consistency": metrics.behavioural_consistency,
+                            "prototype_support_strength": metrics.prototype_support_strength,
+                            "anomaly_indicator": metrics.anomaly_indicator,
                             "matched_prototype_id": metrics.matched_prototype_id,
+                            # Layer-4 output
+                            "trust_score": trust_result.trust_score,
+                            "decision": trust_result.decision,
+                            "raw_trust_signal": trust_result.raw_trust_signal,
+                            # Layer-3 GAT (Task 7)
+                            "layer3_used": trust_result.gat_augmented,
+                            "gat_score": gat_similarity,   # float or null
                         }
                     else:
                         # Engine failed — acknowledge receipt without metrics

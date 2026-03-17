@@ -35,6 +35,11 @@ class Settings:
     COSMOS_ENROLLMENT_CONTAINER: str = os.environ.get("COSMOS_ENROLLMENT_CONTAINER", "enrollment-state")
     COSMOS_PROTOTYPE_CONTAINER: str = os.environ.get("COSMOS_PROTOTYPE_CONTAINER", "prototype-store")
     COSMOS_BEHAVIOUR_LOGS_CONTAINER: str = os.environ.get("COSMOS_BEHAVIOUR_LOGS_CONTAINER", "behaviour-logs")
+    COSMOS_USERS_CONTAINER: str = os.environ.get("COSMOS_USERS_CONTAINER", "users")
+    COSMOS_QUARANTINE_CONTAINER: str = os.environ.get("COSMOS_QUARANTINE_CONTAINER", "quarantine-pool")
+
+    # Default adaptive sigma: 0.15 * sqrt(48) — matches drift_engine._DEFAULT_SIGMA
+    DEFAULT_ADAPTIVE_SIGMA: float = float(os.environ.get("DEFAULT_ADAPTIVE_SIGMA", "1.0392304845413265"))
 
     # Admin authorization token – required to call destructive or training endpoints.
     # Set ADMIN_TOKEN in the environment; if empty, admin endpoints are disabled.
