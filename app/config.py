@@ -1,7 +1,8 @@
 import logging
 import os
 from typing import Literal
-
+from dotenv import load_dotenv
+load_dotenv()  # Load .env file before reading os.environ
 
 class Settings:
     APP_NAME: str = "CBSA Backend"
@@ -12,7 +13,7 @@ class Settings:
     WEBSOCKET_ENDPOINT: str = "/ws/behaviour"
 
     # Layer 3 GAT settings (cloud endpoint no longer used; GAT is now in-process)
-    DEBUG_MODE: bool = False  # Set to False in production
+    DEBUG_MODE: bool = False  # Set to True for local development
     GAT_CLOUD_ENDPOINT: str = ""  # Kept for backwards compatibility; unused
     GAT_WINDOW_SIZE: int = 32  # Deprecated: event count window (kept for compatibility)
     GAT_WINDOW_SECONDS: int = 20  # Temporal graph window in seconds
@@ -22,7 +23,8 @@ class Settings:
     GAT_INFERENCE_INTERVAL_SECONDS: float = 5.0  # Interval between GAT inference calls
 
     # Azure Cosmos DB – shared connection settings for all containers.
-    # Used by: cosmos_logger (computation-logs), cosmos_profile_store (user-profiles).
+    # Used by: cosmos_logger (computation-logs), cosmos_profile_store (user-profiles),
+    #          enrollment_store (enrollment-state).
     # Values are read from environment variables at runtime so secrets are
     # never hard-coded in source.
     COSMOS_ENDPOINT: str = os.environ.get("COSMOS_ENDPOINT", "")
@@ -30,6 +32,13 @@ class Settings:
     COSMOS_DATABASE: str = os.environ.get("COSMOS_DATABASE", "cbsa-logs")
     COSMOS_CONTAINER: str = os.environ.get("COSMOS_CONTAINER", "computation-logs")
     COSMOS_PROFILES_CONTAINER: str = os.environ.get("COSMOS_PROFILES_CONTAINER", "user-profiles")
+    COSMOS_ENROLLMENT_CONTAINER: str = os.environ.get("COSMOS_ENROLLMENT_CONTAINER", "enrollment-state")
+    COSMOS_PROTOTYPE_CONTAINER: str = os.environ.get("COSMOS_PROTOTYPE_CONTAINER", "prototype-store")
+    COSMOS_BEHAVIOUR_LOGS_CONTAINER: str = os.environ.get("COSMOS_BEHAVIOUR_LOGS_CONTAINER", "behaviour-logs")
+
+    # Admin authorization token – required to call destructive or training endpoints.
+    # Set ADMIN_TOKEN in the environment; if empty, admin endpoints are disabled.
+    ADMIN_TOKEN: str = os.environ.get("ADMIN_TOKEN", "")
 
     # Azure Blob Storage – model checkpoint files (.pth).
     # Used by: blob_model_store, gat_engine (download on startup).

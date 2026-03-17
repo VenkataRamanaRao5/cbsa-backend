@@ -16,6 +16,11 @@ If the environment variables are absent, logging is silently skipped.
 """
 
 import logging
+
+# Suppress Azure SDK logs
+logging.getLogger("azure").setLevel(logging.WARNING)
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+logging.getLogger("azure.cosmos._cosmos_http_logging_policy").setLevel(logging.WARNING)
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -23,6 +28,9 @@ from typing import Any, Dict, Optional
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.WARNING)
+for handler in logger.handlers:
+    logger.removeHandler(handler)
 
 # ---------------------------------------------------------------------------
 # Lazy import of azure-cosmos so the app starts even if the package is absent
