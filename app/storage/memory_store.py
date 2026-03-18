@@ -107,3 +107,11 @@ class MemoryStore:
 
 
 memory_store = MemoryStore()
+
+# Module-level aliases for backwards compatibility and test access
+_sessions = memory_store.sessions
+
+
+def get_or_create_session(session_id: str) -> SessionState:
+    """Module-level convenience wrapper for memory_store.get_or_create_session()."""
+    return memory_store.get_or_create_session(session_id)
